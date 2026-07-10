@@ -4,19 +4,103 @@ import tkinter
 import tkinter.font
 from typing import Literal
 
-HSTEP, VSTEP = 13, 18
-WIDTH, HEIGTH = 800, 600
+
+WIDTH, HEIGHT = 800, 600
+HSTEP, VSTEP = 13, 18  # 水平・垂直ステップ
 SCROLL_STEP = 100
 FONTS = {}
 
 
 def get_font(size, weight, style):
+    # フォントキャッシュからフォントを取得または作成する関数
     key = (size, weight, style)
     if key not in FONTS:
+        # キャッシュにない場合は新しいフォントを作成
         font = tkinter.font.Font(size=size, weight=weight, slant=style)
+        # パフォーマンス向上のためのLabelオブジェクト（Tkinterの推奨）
         label = tkinter.Label(font=font)
         FONTS[key] = (font, label)
+    # キャッシュからフォントオブジェクトを返す
     return FONTS[key][0]
+
+
+class URL:
+    # コンストラクタ: URL文字列を受け取り、オブジェクトを初期化します
+    def __init__(self, url):
+        # スキームと残りのURLを分割します
+        self.scheme, url = url.split("://", 1)
+        # スキームが 'http' または 'https' であることを確認します
+        assert self.scheme in ["http", "https"]
+        if self.scheme == "http":
+            self.port = 80
+        elif self.scheme == "https":
+            self.port = 443
+        if "/" not in url:
+            url = url + "/"
+        # ホストと残りのURL（パス）を分割します
+        self.host, url = url.split("/", 1)
+        # ホスト名にポートが含まれているか確認します
+        if ":" in self.host:
+            # ホスト名とポート番号を分割します
+            self.host, port = self.host.split(":", 1)
+            # ポート番号を整数に変換します
+            self.port = int(port)
+        # パスを '/' から始まるように設定します
+        self.path = "/" + url
+
+    def request(self):
+        # TCP/IPソケットを作成します
+        s = socket.socket(
+            family=socket.AF_INET,  # IPv4アドレスファミリー
+            type=socket.SOCK_STREAM,  # ストリームソケットタイプ (TCP)
+            proto=socket.IPPROTO_TCP,  # TCPプロトコル
+        )
+        # 指定されたホストとポートに接続します
+        s.connect((self.host, self.port))
+
+        # HTTPSスキームの場合、SSL/TLSでソケットをラップします
+        if self.scheme == "https":
+            ctx = ssl.create_default_context()
+            s = ctx.wrap_socket(s, server_hostname=self.host)
+
+        # GETリクエスト文字列を作成します
+        request = "GET {} HTTP/1.0\r\n".format(self.path)
+        # Hostヘッダーを追加します
+        request += "Host: {}\r\n".format(self.host)
+        # ヘッダーの終わりを示す空行を追加します
+        request += "\r\n"
+        # リクエストをUTF-8でエンコードして送信します
+        s.send(request.encode("utf8"))
+        response = s.makefile("r", encoding="utf8", newline="\r\n")
+
+        # レスポンスの最初の行（ステータスライン）を読み取ります
+        statusline = response.readline()
+        # ステータスラインをバージョン、ステータスコード、説明に分割します
+        version, status, explanation = statusline.split(" ", 2)
+
+        # レスポンスヘッダーを格納するディクショナリを初期化します
+        response_headers = {}
+        # ヘッダーを読み取るループ
+        while True:
+            line = response.readline()
+            # 空行はヘッダーの終わりを示します
+            if line == "\r\n":
+                break
+            # ヘッダー名と値をコロンで分割します
+            header, value = line.split(":", 1)
+            # ヘッダー名を小文字に正規化し、値の前後の空白を削除してディクショナリに追加します
+            response_headers[header.casefold()] = value.strip()
+        # Transfer-Encodingヘッダーがないことを確認します
+        assert "transfer-encoding" not in response_headers
+        # Content-Encodingヘッダーがないことを確認します
+        assert "content-encoding" not in response_headers
+
+        content = response.read()
+        # ソケットを閉じます
+        s.close()
+        # ... (ボディ読み取り、ソケットクローズ)
+        # レスポンスのボディを返します
+        return content
 
 
 class Text:
@@ -25,6 +109,9 @@ class Text:
         self.children = []
         self.parent = parent
 
+    def __repr__(self):
+        return repr(self.text)
+
 
 class Element:
     def __init__(self, tag, parent):
@@ -32,10 +119,51 @@ class Element:
         self.children = []
         self.parent = parent
 
+    def __repr__(self):
+        return "<" + self.tag + ">"
+
+
+def print_tree(node, indent=0):
+    print(" " * indent, node)
+    for child in node.children:
+        print_tree(child, indent + 2)
+
+
 class HTMLParser:
     def __init__(self, body):
         self.body = body
         self.unfinished = []
+
+    def add_text(self, text):
+        if text.isspace():
+            return
+        parent = self.unfinished[-1]
+        node = Text(text, parent)
+        parent.children.append(node)
+
+    def add_tag(self, tag):
+        if tag.startswith("!"):
+            return
+        # 終了タグの場合
+        if tag.startswith("/"):
+            if len(self.unfinished) == 1:
+                return
+            node = self.unfinished.pop()
+            parent = self.unfinished[-1]
+            parent.children.append(node)
+        # 開始タグの場合
+        else:
+            parent = self.unfinished[-1] if self.unfinished else None
+            node = Element(tag, parent)
+            self.unfinished.append(node)
+
+    def finish(self):
+        while len(self.unfinished) > 1:
+            node = self.unfinished.pop()
+            parent = self.unfinished[-1]
+            parent.children.append(node)
+        return self.unfinished.pop()
+
     def parse(self):
         text = ""
         in_tag = False
@@ -54,32 +182,6 @@ class HTMLParser:
         if not in_tag and text:
             self.add_text(text)
         return self.finish()
-    def add_text(self, text):
-        parent = self.unfinished[-1]
-        node = Text(text, parent)
-        parent.children.append(node)
-    def add_tag(self, tag):
-        # 終了タグの場合
-        if tag.startswith("/"):
-            if len(self.unfinished) == 1:
-                return
-            node = self.unfinished.pop()
-            parent = self.unfinished[-1]
-            parent.children.append(node)
-            
-        # 開始タグの場合
-        else:
-            parent = self.unfinished[-1] if self.unfinished else None
-            if self.unfinished
-            node = Element(tag, parent)
-            self.unfinished.append(node)
-
-    def finish(self):
-        while len(self.unfinished) > 1:
-            node = self.unfinished.pop()
-            parent = self.unfinished[-1]
-            parent.children.append(node)
-        return self.unfinished.pop()
 
 
 class Layout:
@@ -92,36 +194,8 @@ class Layout:
         self.size = 12
         self.line = []
         for tok in tokens:
-            self.token(tok)
-        self.flush()
-
-    def token(self, tok):
-        if isinstance(tok, Text):
-            # textトークンはwordメソッドで単語ごとに処理
-            for word in tok.text.split():
-                self.word(word)
-        elif tok.tag == "i":
-            self.style = "italic"
-        elif tok.tag == "/i":
-            self.style = "roman"
-        elif tok.tag == "b":
-            self.weight = "bold"
-        elif tok.tag == "/b":
-            self.weight = "normal"
-        elif tok.tag == "small":
-            self.sizes -= 2
-        elif tok.tag == "/small":
-            self.sizes += 2
-        elif tok.tag == "big":
-            self.sizes += 4
-        elif tok.tag == "/big":
-            self.sizes -= 4
-        elif tok.tag == "br":
-            self.flush()  # <br>タグで行をフラッシュ
-        elif tok.tag == "/p":
-            self.flush()  # </p>タグで行をフラッシュ
-            self.cursor_y += VSTEP  # 段落間のスペースを追加
-        return self.display_list
+            self.token(tok)  # 各トークンを処理
+        self.flush()  # 最後に残った行をフラッシュ
 
     def flush(self):
         if not self.line:
@@ -148,143 +222,87 @@ class Layout:
     def word(self, word):
         font = get_font(self.size, self.weight, self.style)
         w = font.measure(word)  # 単語の幅を測定
-        if self.cursor_x + w > WIDTH - HSTEP:  # 単語が右端を超える場合は改行
+        # 単語が右端を超える場合は行をフラッシュ
+        if self.cursor_x + w > WIDTH - HSTEP:
             self.flush()
-        # ディスプレイリストdisplay listに単語とその座標を追加
         self.line.append((self.cursor_x, word, font))
         # カーソルを単語の幅とスペース分だけ進める
         self.cursor_x += w + font.measure(" ")
 
-
-class URL:
-    def __init__(self, url):
-        # スキームと残りのurlを分割します
-        self.scheme, url = url.split("://", 1)
-        assert self.scheme in ["http", "https"]
-        if self.scheme == "http":
-            self.port = 80
-        elif self.scheme == "https":
-            self.port = 443
-
-        # urlにパス区切りの'/'がないなら追加
-        if "/" not in url:
-            url = url + "/"
-        # ホストと残りのurl（パス)を分割します
-        self.host, url = url.split("/", 1)
-        # パスを'/'から始まるように設定します
-        self.path = "/" + url
-
-        if ":" in self.host:
-            self.host, port = self.host.split(":", 1)
-            self.port = int(port)
-
-    def request(self):
-        # tcp/ipソケットを作成します
-        s = socket.socket(
-            family=socket.AF_INET,
-            type=socket.SOCK_STREAM,
-            proto=socket.IPPROTO_TCP,
-        )
-        s.connect((self.host, self.port))
-
-        if self.scheme == "https":
-            ctx = ssl.create_default_context()
-            s = ctx.wrap_socket(s, server_hostname=self.host)
-
-        # getリクエスト文字列を作成
-        request = "GET {} HTTP/1.0\r\n".format(self.path)
-        request += "HOST: {}\r\n".format(self.host)
-        request += "\r\n"
-        s.send(request.encode("utf8"))
-        response = s.makefile("r", encoding="utf8", newline="\r\n")
-        statusline = response.readline()
-        version, status, explanation = statusline.split(" ", 2)
-        response_headers = {}
-        while True:
-            line = response.readline()
-            if line == "\r\n":
-                break
-            header, value = line.split(":", 1)
-            response_headers[header.casefold()] = value.strip()
-
-        # Transfer-Encodingヘッダがないことを確認
-        assert "transfer-encoding" not in response_headers
-        assert "content-encoding" not in response_headers
-        content = response.read()
-        s.close()
-        return content
-
-
-def show(body):
-    in_tag = False
-    for c in body:
-        if c == "<":
-            in_tag = True
-        elif c == ">":
-            in_tag = False
-        elif not in_tag:
-            # タグの外の文字を出力
-            print(c, end="")
-
-
-def lex(body):
-    out = []
-    buffer = ""
-    in_tag = False
-    for c in body:
-        if c == "<":
-            in_tag = True
-            # バッファにテキストがあればTextオブジェクトとして追加
-            if buffer:
-                out.append(Text(buffer))
-            buffer = ""  # バッファをクリア
-        elif c == ">":
-            in_tag = False
-            out.append(Tag(buffer))
-            buffer = ""
-        elif not in_tag:
-            buffer += c
-    if not in_tag and buffer:
-        out.append(Text(buffer))
-    return out
-
-
-def load(url):
-    body = url.request()
-    show(body)
+    def token(self, tok):
+        if isinstance(tok, Text):
+            # Textトークンはwordメソッドで単語ごとに処理
+            for word in tok.text.split():
+                self.word(word)
+        elif tok.tag == "i":
+            self.style = "italic"
+        elif tok.tag == "/i":
+            self.style = "roman"
+        elif tok.tag == "b":
+            self.weight = "bold"
+        elif tok.tag == "/b":
+            self.weight = "normal"
+        elif tok.tag == "small":
+            self.size -= 2
+        elif tok.tag == "/small":
+            self.size += 2
+        elif tok.tag == "big":
+            self.size += 4
+        elif tok.tag == "/big":
+            self.size -= 4
+        elif tok.tag == "br":
+            self.flush()  # <br>タグで行をフラッシュ
+        elif tok.tag == "/p":
+            self.flush()  # </p>タグで行をフラッシュ
+            self.cursor_y += VSTEP  # 段落間のスペースを追加
+        return self.display_list
 
 
 class Browser:
     def __init__(self):
         self.window = tkinter.Tk()
-        self.canvas = tkinter.Canvas(self.window, width=WIDTH, height=HEIGTH)
+        self.canvas = tkinter.Canvas(self.window, width=WIDTH, height=HEIGHT)
         self.canvas.pack()
+        # スクロール位置を初期化
         self.scroll = 0
+        # 下矢印キーにscrolldownメソッドをバインド
         self.window.bind("<Down>", self.scrolldown)
-
-    def load(self, url):
-        body = url.request()
-        tokens = lex(body)
-        self.display_list = Layout(tokens).display_list
-        # print(self.display_list)
-        self.draw()
-
-    def draw(self):
-        self.canvas.delete("all")
-        for x, y, c, font in self.display_list:
-            if y > self.scroll + HEIGTH:
-                continue
-            if y + VSTEP < self.scroll:
-                continue
-            self.canvas.create_text(x, y - self.scroll, text=c, font=font, anchor="nw")
 
     def scrolldown(self, e):
         self.scroll += SCROLL_STEP
         self.draw()  # 再描画
 
+    # URLからWebページを読み込み、表示する関数
+    def load(self, url):
+        body = url.request()
+        tokens = lex(body)
+        self.display_list = Layout(tokens).display_list
+        # ディスプレイリストdisplay listを描画
+        self.draw()
+
+    # ディスプレイリスト display listに基づいてキャンバスに描画するメソッド
+    def draw(self):
+        # 描画前にキャンバスをクリア
+        self.canvas.delete("all")
+        for x, y, word, font in self.display_list:
+            # 画面下部より下の文字はスキップ
+            if y > self.scroll + HEIGHT:
+                continue
+            # 画面上部より上の文字はスキップ
+            if y + VSTEP < self.scroll:
+                continue
+            # スクロール位置を考慮して文字を描画
+            self.canvas.create_text(
+                x, y - self.scroll, text=word, font=font, anchor="nw"
+            )
+
 
 if __name__ == "__main__":
     import sys
 
-    Browser().load(URL(sys.argv[1]))
-    tkinter.mainloop()
+    # コマンドライン引数からURLを取得して読み込みます
+    # Browser().load(URL(sys.argv[1]))
+    # tkinter.mainloop()
+    body = URL(sys.argv[1]).request()
+    nodes = HTMLParser(body).parse()
+    print_tree(nodes)
