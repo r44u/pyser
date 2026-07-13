@@ -147,7 +147,6 @@ class HTMLParser:
         "track",
         "wbr",
     ]
-
     HEAD_TAGS = [
         "base",
         "basefont",
@@ -209,6 +208,23 @@ class HTMLParser:
                 attributes[attrpair.casefold()] = ""
         return tag, attributes
 
+    def implicit_tags(self, tag):
+        while True:
+            open_tags = [node.tag for node in self.unfinished]
+            if open_tags == [] and tag != "html":
+                self.add_tag("html")
+            elif open_tags == ["html"] and tag not in ["head", "body", "/html"]:
+                if tag in self.HEAD_TAGS:
+                    self.add_tag("head")
+                else:
+                    self.add_tag("body")
+            elif (
+                open_tags == ["html", "head"] and tag not in ["/head"] + self.HEAD_TAGS
+            ):
+                self.add_tag("/head")
+            else:
+                break
+
     def finish(self):
         if not self.unfinished:
             self.implicit_tags(None)
@@ -237,26 +253,28 @@ class HTMLParser:
             self.add_text(text)
         return self.finish()
 
-    def implicit_tags(self, tag):
-        while True:
-            open_tags = [node.tag for node in self.unfinished]
-            if open_tags == [] and tag != "html":
-                self.add_tag("html")
-            elif open_tags == ["html"] and tag not in ["head", "body", "/html"]:
-                if tag in self.HEAD_TAGS:
-                    self.add_tag("head")
-                else:
-                    self.add_tag("body")
-            elif (
-                open_tags == ["html", "head"] and tag not in ["/head"] + self.HEAD_TAGS
-            ):
-                self.add_tag("/head")
-            else:
-                break
+
+class DocumentLayout:
+    def __init__(self, node):
+        self.node = node
+        self.parent = None
+        self.children = []
+
+    def layout(self):
+        child = BlockLayout(self.node, self, None)
+        self.children.append(child)
+        child.layout()
+        self.display_list = child.display_list
 
 
-class Layout:
-    def __init__(self, tokens):
+class BlockLayout:
+    def __init__(self, node, parent, previous):
+        self.node = node
+        self.parent = parent
+        self.previous = previous
+        self.children = []
+
+    def layout(self):
         self.display_list = []
         self.cursor_x = HSTEP
         self.cursor_y = VSTEP
@@ -264,7 +282,7 @@ class Layout:
         self.style: Literal["roman", "italic"] = "roman"
         self.size = 12
         self.line = []
-        self.recurse(tokens)
+        self.recurse(self.node)
         self.flush()  # 最後に残った行をフラッシュ
 
     def flush(self):
@@ -355,14 +373,15 @@ class Browser:
     def load(self, url):
         body = url.request()
         self.nodes = HTMLParser(body).parse()
-        self.display_list = Layout(self.nodes).display_list
+        self.document = DocumentLayout(self.nodes)
+        self.document.layout()
         self.draw()
 
     # ディスプレイリスト display listに基づいてキャンバスに描画するメソッド
     def draw(self):
         # 描画前にキャンバスをクリア
         self.canvas.delete("all")
-        for x, y, word, font in self.display_list:
+        for x, y, word, font in self.document.display_list:
             # 画面下部より下の文字はスキップ
             if y > self.scroll + HEIGHT:
                 continue
