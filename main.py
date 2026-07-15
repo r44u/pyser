@@ -2,13 +2,50 @@ import socket
 import ssl
 import tkinter
 import tkinter.font
-from typing import Literal
-
 
 WIDTH, HEIGHT = 800, 600
 HSTEP, VSTEP = 13, 18  # 水平・垂直ステップ
 SCROLL_STEP = 100
 FONTS = {}
+BLOCK_ELEMENTS = [
+    "html",
+    "body",
+    "article",
+    "section",
+    "nav",
+    "aside",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "hgroup",
+    "header",
+    "footer",
+    "address",
+    "p",
+    "hr",
+    "pre",
+    "blockquote",
+    "ol",
+    "ul",
+    "menu",
+    "li",
+    "dl",
+    "dt",
+    "dd",
+    "figure",
+    "figcaption",
+    "main",
+    "div",
+    "table",
+    "form",
+    "fieldset",
+    "legend",
+    "details",
+    "summary",
+]
 
 
 def get_font(size, weight, style):
@@ -260,6 +297,9 @@ class DocumentLayout:
         self.parent = None
         self.children = []
 
+    def __repr__(self):
+        return "DocumentLayout()"
+
     def layout(self):
         child = BlockLayout(self.node, self, None)
         self.children.append(child)
@@ -273,17 +313,45 @@ class BlockLayout:
         self.parent = parent
         self.previous = previous
         self.children = []
+        self.display_list = []
+
+    def __repr__(self):
+        return "BlockLayout(node={}, mode={})".format(self.node, self.layout_mode())
+
+    def layout_mode(self):
+        if isinstance(self.node, Text):
+            return "inline"
+        elif any(
+            [
+                isinstance(child, Element) and child.tag in BLOCK_ELEMENTS
+                for child in self.node.children
+            ]
+        ):
+            return "block"
+        elif self.node.children:
+            return "inline"
+        else:
+            return "block"
 
     def layout(self):
-        self.display_list = []
-        self.cursor_x = HSTEP
-        self.cursor_y = VSTEP
-        self.weight: Literal["normal", "bold"] = "normal"
-        self.style: Literal["roman", "italic"] = "roman"
-        self.size = 12
-        self.line = []
-        self.recurse(self.node)
-        self.flush()  # 最後に残った行をフラッシュ
+        mode = self.layout_mode()
+        if mode == "block":
+            previous = None
+            for child in self.node.children:
+                next = BlockLayout(child, self, previous)
+                self.children.append(next)
+                previous = next
+        else:
+            self.cursor_x = 0
+            self.cursor_y = 0
+            self.weight = "normal"
+            self.style = "roman"
+            self.size = 12
+            self.line = []
+            self.recurse(self.node)
+            self.flush()
+        for child in self.children:
+            child.layout()
 
     def flush(self):
         if not self.line:
@@ -375,6 +443,7 @@ class Browser:
         self.nodes = HTMLParser(body).parse()
         self.document = DocumentLayout(self.nodes)
         self.document.layout()
+        print_tree(self.document)
         self.draw()
 
     # ディスプレイリスト display listに基づいてキャンバスに描画するメソッド
