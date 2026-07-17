@@ -169,6 +169,12 @@ def print_tree(node, indent=0):
         print_tree(child, indent + 2)
 
 
+def paint_tree(layout_object, display_list):
+    display_list.extend(layout_object.paint())
+    for child in layout_object.children:
+        paint_tree(child, display_list)
+
+
 class HTMLParser:
     SELF_CLOSING_TAGS = [
         "area",
@@ -309,6 +315,9 @@ class DocumentLayout:
         child.layout()
         self.height = child.height
 
+    def paint(self):
+        return []
+
 
 class BlockLayout:
     def __init__(self, node, parent, previous):
@@ -435,6 +444,9 @@ class BlockLayout:
             self.close_tag(tree.tag)
         return self.display_list
 
+    def paint(self):
+        return self.display_list
+
 
 class Browser:
     def __init__(self):
@@ -456,14 +468,15 @@ class Browser:
         self.nodes = HTMLParser(body).parse()
         self.document = DocumentLayout(self.nodes)
         self.document.layout()
-        print_tree(self.document)
+        self.display_list = []
+        paint_tree(self.document, self.display_list)
         self.draw()
 
     # ディスプレイリスト display listに基づいてキャンバスに描画するメソッド
     def draw(self):
         # 描画前にキャンバスをクリア
         self.canvas.delete("all")
-        for x, y, word, font in self.document.display_list:
+        for x, y, word, font in self.display_list:
             # 画面下部より下の文字はスキップ
             if y > self.scroll + HEIGHT:
                 continue
