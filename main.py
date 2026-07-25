@@ -48,6 +48,12 @@ BLOCK_ELEMENTS = [
     "details",
     "summary",
 ]
+INHERITED_PROPERTIES = {
+    "font-size": "16px",
+    "font-style": "normal",
+    "font-weight": "normal",
+    "color": "black",
+}
 
 
 class DrawText:
@@ -174,6 +180,25 @@ class URL:
         # レスポンスのボディを返します
         return content
 
+    def resolve(self, url):
+        # 通常のURL
+        if "://" in url:
+            return URL(url)
+        # パス相対URL
+        if not url.startswith("/"):
+            dir, _ = self.path.rsplit("/", 1)
+            while url.startswith("../"):
+                _, url = url.split("/", 1)
+                if "/" in dir:
+                    dir, _ = dir.rsplit("/", 1)
+            url = dir + "/" + url
+        # スキーム相対URL
+        if url.startswith("//"):
+            return URL(self.scheme + ":" + url)
+        # ホスト相対URL
+        else:
+            return URL(self.scheme + "://" + self.host + ":" + str(self.port) + url)
+
 
 class Text:
     def __init__(self, text, parent):
@@ -206,6 +231,13 @@ def paint_tree(layout_object, display_list):
     display_list.extend(layout_object.paint())
     for child in layout_object.children:
         paint_tree(child, display_list)
+
+
+def tree_to_list(tree, list):
+    list.append(tree)
+    for child in tree.children:
+        tree_to_list(child, list)
+    return list
 
 
 class HTMLParser:
@@ -332,9 +364,15 @@ class HTMLParser:
         return self.finish()
 
 
+def cascade_priority(rule):
+    selector, body = rule
+    return selector.priority
+
+
 class TagSelector:
     def __init__(self, tag):
         self.tag = tag
+        self.priority = 1
 
     def matches(self, node):
         return isinstance(node, Element) and self.tag == node.tag
@@ -344,6 +382,7 @@ class DescendantSelector:
     def __init__(self, ancestor, descendant):
         self.ancestor = ancestor
         self.descendant = descendant
+        self.priority = ancestor.priority + descendant.priority
 
     def matches(self, node):
         # 自分自身がdescendantのセレクタと一致するか
@@ -451,15 +490,33 @@ class CSSParser:
         return rules
 
 
-def style(node):
+def style(node, rules):
     node.style = {}
+    for property, default_value in INHERITED_PROPERTIES.items():
+        if node.parent:
+            node.style[property] = node.parent.style[property]
+        else:
+            node.style[property] = default_value
+    for selector, body in rules:
+        if not selector.matches(node):
+            continue
+        for property, value in body.items():
+            node.style[property] = value
     if isinstance(node, Element) and "style" in node.attributes:
         pairs = CSSParser(node.attributes["style"]).body()
         for property, value in pairs.items():
             node.style[property] = value
-
+    if node.style["font-size"].endswith("%"):
+        if node.parent:
+            parent_font_size = node.parent.style["font-size"]
+        # ルートのhtml要素のとき(node.parentがないとき)
+        else:
+            parent_font_size = INHERITED_PROPERTIES["font-size"]
+        node_pct = float(node.style["font-size"][:-1]) / 100
+        parent_px = float(parent_font_size[:-2])
+        node.style["font-size"] = str(node_pct * parent_px) + "px"
     for child in node.children:
-        style(child)
+        style(child, rules)
 
 
 class DocumentLayout:
@@ -624,6 +681,9 @@ class BlockLayout:
         return cmds
 
 
+DEFAULT_STYLE_SHEET = CSSParser(open("browser.css").read()).parse()
+
+
 class Browser:
     def __init__(self):
         self.window = tkinter.Tk()
@@ -643,7 +703,23 @@ class Browser:
     def load(self, url):
         body = url.request()
         self.nodes = HTMLParser(body).parse()
-        style(self.nodes)
+        rules = DEFAULT_STYLE_SHEET.copy()
+        links = [
+            node.attributes["href"]
+            for node in tree_to_list(self.nodes, [])
+            if isinstance(node, Element)
+            and node.tag == "link"
+            and node.attributes.get("rel") == "stylesheet"
+            and "href" in node.attributes
+        ]
+        for link in links:
+            style_url = url.resolve(link)
+            try:
+                body = style_url.request()
+            except:
+                continue
+            rules.extend(CSSParser(body).parse())
+        style(self.nodes, sorted(rules, key=cascade_priority))
         self.document = DocumentLayout(self.nodes)
         self.document.layout()
         self.display_list = []
