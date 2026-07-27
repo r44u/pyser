@@ -57,16 +57,22 @@ INHERITED_PROPERTIES = {
 
 
 class DrawText:
-    def __init__(self, x1, y1, text, font):
+    def __init__(self, x1, y1, text, font, color):
         self.top = y1
         self.left = x1
         self.text = text
         self.font = font
         self.bottom = y1 + font.metrics("linespace")
+        self.color = color
 
     def execute(self, scroll, canvas):
         canvas.create_text(
-            self.left, self.top - scroll, text=self.text, font=self.font, anchor="nw"
+            self.left,
+            self.top - scroll,
+            text=self.text,
+            font=self.font,
+            anchor="nw",
+            fill=self.color,
         )
 
 
@@ -585,9 +591,6 @@ class BlockLayout:
         else:
             self.cursor_x = 0
             self.cursor_y = 0
-            self.weight = "normal"
-            self.style = "roman"
-            self.size = 12
             self.line = []
             self.recurse(self.node)
             self.flush()
@@ -602,15 +605,15 @@ class BlockLayout:
         if not self.line:
             return  # 行が空なら何もしない
         # 行内の最大アセントを計算
-        max_ascent = max([font.metrics("ascent") for x, word, font in self.line])
+        max_ascent = max([font.metrics("ascent") for x, word, font, color in self.line])
         # ベースラインのy座標を計算 (レディングを考慮)
         baseline = self.cursor_y + 1.25 * max_ascent
-        for rel_x, word, font in self.line:
+        for rel_x, word, font, color in self.line:
             x = self.x + rel_x
             y = self.y + baseline - font.metrics("ascent")
-            self.display_list.append((x, y, word, font))
+            self.display_list.append((x, y, word, font, color))
         # 行内の最大ディセントを計算
-        metrics = [font.metrics() for x, word, font in self.line]
+        metrics = [font.metrics() for x, word, font, color in self.line]
         max_descent = max([metric["descent"] for metric in metrics])
         # 次の行のy座標を更新 (レディングを考慮)
         self.cursor_y = baseline + 1.25 * max_descent
@@ -618,57 +621,37 @@ class BlockLayout:
         self.cursor_x = 0
         self.line = []
 
-    def word(self, word):
-        font = get_font(self.size, self.weight, self.style)
+    def word(self, node, word):
+        color = node.style["color"]
+        weight = node.style["font-weight"]
+        style = node.style["font-style"]
+        if style == "normal":
+            style = "roman"
+        size = int(float(node.style["font-size"][:-2]) * 0.75)
+        font = get_font(size, weight, style)
         w = font.measure(word)  # 単語の幅を測定
         if self.cursor_x + w > self.width:
             self.flush()
-        self.line.append((self.cursor_x, word, font))
+        self.line.append((self.cursor_x, word, font, color))
         # カーソルを単語の幅とスペース分だけ進める
         self.cursor_x += w + font.measure(" ")
 
-    def open_tag(self, tag):
-        if tag == "i":
-            self.style = "italic"
-        elif tag == "b":
-            self.weight = "bold"
-        elif tag == "small":
-            self.size -= 2
-        elif tag == "big":
-            self.size += 4
-        elif tag == "br":
-            self.flush()  # <br>タグで行をフラッシュ
-
-    def close_tag(self, tag):
-        if tag == "i":
-            self.style = "roman"
-        elif tag == "b":
-            self.weight = "normal"
-        elif tag == "small":
-            self.size += 2
-        elif tag == "big":
-            self.size -= 4
-        elif tag == "p":
-            self.flush()  # </p>タグで行をフラッシュ
-            self.cursor_y += VSTEP  # 段落間のスペースを追加
-
-    def recurse(self, tree):
-        if isinstance(tree, Text):
-            # Textトークンはwordメソッドで単語ごとに処理
-            for word in tree.text.split():
-                self.word(word)
+    def recurse(self, node):
+        if isinstance(node, Text):
+            for word in node.text.split():
+                self.word(node, word)
         else:
-            self.open_tag(tree.tag)
-            for child in tree.children:
+            if node.tag == "br":
+                self.flush()
+            for child in node.children:
                 self.recurse(child)
-            self.close_tag(tree.tag)
         return self.display_list
 
     def paint(self):
         cmds = []
         if self.layout_mode() == "inline":
-            for x, y, word, font in self.display_list:
-                cmds.append(DrawText(x, y, word, font))
+            for x, y, word, font, color in self.display_list:
+                cmds.append(DrawText(self.x + x, self.y + y, word, font, color))
         if isinstance(self.node, Element) and self.node.tag == "pre":
             x2, y2 = self.x + self.width, self.y + self.height
             rect = DrawRect(self.x, self.y, x2, y2, "gray")
@@ -687,7 +670,9 @@ DEFAULT_STYLE_SHEET = CSSParser(open("browser.css").read()).parse()
 class Browser:
     def __init__(self):
         self.window = tkinter.Tk()
-        self.canvas = tkinter.Canvas(self.window, width=WIDTH, height=HEIGHT)
+        self.canvas = tkinter.Canvas(
+            self.window, width=WIDTH, height=HEIGHT, bg="white"
+        )
         self.canvas.pack()
         # スクロール位置を初期化
         self.scroll = 0
