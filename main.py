@@ -630,12 +630,11 @@ class BlockLayout:
         w = font.measure(word)  # 単語の幅を測定
         if self.cursor_x + w > self.width:
             self.new_line()
-        self.line.append((self.cursor_x, word, font, color))
         # カーソルを単語の幅とスペース分だけ進める
         self.cursor_x += w + font.measure(" ")
 
         line = self.children[-1]
-        previous_word = line.children[-1] if line.childre else None
+        previous_word = line.children[-1] if line.children else None
         text = TextLayout(node, word, line, previous_word)
         line.children.append(text)
         self.cursor_x += w + font.measure(" ")
