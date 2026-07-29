@@ -601,6 +601,7 @@ class BlockLayout:
         for rel_x, word, font, color in self.line:
             x = self.x + rel_x
             y = self.y + baseline - font.metrics("ascent")
+            self.display_list.append((x, y, word, font, color))
         # 行内の最大ディセントを計算
         metrics = [font.metrics() for x, word, font, color in self.line]
         max_descent = max([metric["descent"] for metric in metrics])
@@ -610,14 +611,7 @@ class BlockLayout:
         self.cursor_x = 0
         self.line = []
 
-    def new_line(self):
-        self.cursor_x = 0
-        last_line = self.children[-1] if self.children else None
-        new_line = LineLayout(self.node, self, last_line)
-        self.children.append(new_line)
-
     def word(self, node, word):
-        color = node.style["color"]
         weight = node.style["font-weight"]
         style = node.style["font-style"]
         if style == "normal":
@@ -627,14 +621,17 @@ class BlockLayout:
         w = font.measure(word)  # 単語の幅を測定
         if self.cursor_x + w > self.width:
             self.new_line()
-        # カーソルを単語の幅とスペース分だけ進める
-        self.cursor_x += w + font.measure(" ")
-
         line = self.children[-1]
         previous_word = line.children[-1] if line.children else None
         text = TextLayout(node, word, line, previous_word)
         line.children.append(text)
         self.cursor_x += w + font.measure(" ")
+
+    def new_line(self):
+        self.cursor_x = 0
+        last_line = self.children[-1] if self.children else None
+        new_line = LineLayout(self.node, self, last_line)
+        self.children.append(new_line)
 
     def recurse(self, node):
         if isinstance(node, Text):
@@ -658,9 +655,6 @@ class BlockLayout:
         return cmds
 
 
-DEFAULT_STYLE_SHEET = CSSParser(open("browser.css").read()).parse()
-
-
 class LineLayout:
     def __init__(self, node, parent, previous):
         self.node = node
@@ -675,14 +669,17 @@ class LineLayout:
             self.y = self.previous.y + self.previous.height
         else:
             self.y = self.parent.y
-
         for word in self.children:
             word.layout()
-        max_ascent = max([word.font.metrics("ascent") for word in self.children])
+        max_ascent = max(
+            [word.font.metrics("ascent") for word in self.children], default=0
+        )
         baseline = self.y + 1.25 * max_ascent
         for word in self.children:
             word.y = baseline - word.font.metrics("ascent")
-        max_descent = max([word.font.metrics("descent") for word in self.children])
+        max_descent = max(
+            [word.font.metrics("descent") for word in self.children], default=0
+        )
         self.height = 1.25 * (max_ascent + max_descent)
 
     def paint(self):
@@ -710,12 +707,14 @@ class TextLayout:
             self.x = self.previous.x + space + self.previous.width
         else:
             self.x = self.parent.x
-
         self.height = self.font.metrics("linespace")
 
     def paint(self):
         color = self.node.style["color"]
         return [DrawText(self.x, self.y, self.word, self.font, color)]
+
+
+DEFAULT_STYLE_SHEET = CSSParser(open("browser.css").read()).parse()
 
 
 class Browser:
@@ -729,6 +728,27 @@ class Browser:
         self.scroll = 0
         # 下矢印キーにscrolldownメソッドをバインド
         self.window.bind("<Down>", self.scrolldown)
+        self.window.bind("<Button-1>", self.click)
+        self.url = None
+
+    def click(self, e):
+        x, y = e.x, e.y
+        y += self.scroll
+        objs = [
+            obj
+            for obj in tree_to_list(self.document, [])
+            if obj.x <= x < obj.x + obj.width and obj.y <= y < obj.y + obj.height
+        ]
+        if not objs:
+            return
+        elt = objs[-1].node
+        while elt:
+            if isinstance(elt, Text):
+                pass
+            elif elt.tag == "a" and "href" in elt.attributes:
+                url = self.url.resolve(elt.attributes["href"])
+                return self.load(url)
+            elt = elt.parent
 
     def scrolldown(self, e):
         max_y = max(self.document.height + 2 * VSTEP - HEIGHT, 0)
@@ -737,6 +757,8 @@ class Browser:
 
     # URLからWebページを読み込み、表示する関数
     def load(self, url):
+        self.url = url
+        print(self.url)
         body = url.request()
         self.nodes = HTMLParser(body).parse()
         rules = DEFAULT_STYLE_SHEET.copy()
