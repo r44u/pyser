@@ -717,22 +717,13 @@ class TextLayout:
 DEFAULT_STYLE_SHEET = CSSParser(open("browser.css").read()).parse()
 
 
-class Browser:
+class Tab:
     def __init__(self):
-        self.window = tkinter.Tk()
-        self.canvas = tkinter.Canvas(
-            self.window, width=WIDTH, height=HEIGHT, bg="white"
-        )
-        self.canvas.pack()
-        # スクロール位置を初期化
         self.scroll = 0
         # 下矢印キーにscrolldownメソッドをバインド
-        self.window.bind("<Down>", self.scrolldown)
-        self.window.bind("<Button-1>", self.click)
         self.url = None
 
-    def click(self, e):
-        x, y = e.x, e.y
+    def click(self, x, y):
         y += self.scroll
         objs = [
             obj
@@ -750,14 +741,14 @@ class Browser:
                 return self.load(url)
             elt = elt.parent
 
-    def scrolldown(self, e):
+    def scrolldown(self):
         max_y = max(self.document.height + 2 * VSTEP - HEIGHT, 0)
         self.scroll = min(self.scroll + SCROLL_STEP, max_y)
-        self.draw()
 
     # URLからWebページを読み込み、表示する関数
     def load(self, url):
         self.url = url
+        self.scroll = 0
         print(self.url)
         body = url.request()
         self.nodes = HTMLParser(body).parse()
@@ -782,10 +773,9 @@ class Browser:
         self.document.layout()
         self.display_list = []
         paint_tree(self.document, self.display_list)
-        self.draw()
 
-    def draw(self):
-        self.canvas.delete("all")
+    def draw(self, canvas):
+        canvas.delete("all")
         for cmd in self.display_list:
             # スクロール量がcmdのtopに達してなければスキップ
             if cmd.top > self.scroll + HEIGHT:
@@ -793,12 +783,44 @@ class Browser:
             # スクロール量がcmdのbottomよりも大きければ見えないのでスキップ
             if cmd.bottom < self.scroll:
                 continue
-            cmd.execute(self.scroll, self.canvas)
+            cmd.execute(self.scroll, canvas)
+
+
+class Browser:
+    def __init__(self):
+        self.window = tkinter.Tk()
+        self.canvas = tkinter.Canvas(
+            self.window, width=WIDTH, height=HEIGHT, bg="white"
+        )
+        self.canvas.pack()
+        self.window.bind("<Down>", self.handle_down)
+        self.window.bind("<Button-1>", self.handle_click)
+        self.tabs = []
+        self.active_tab = None
+
+    def handle_down(self, e):
+        self.active_tab.scrolldown()
+        self.draw()
+
+    def handle_click(self, e):
+        self.active_tab.click(e.x, e.y)
+        self.draw()
+
+    def draw(self):
+        self.canvas.delete("all")
+        self.active_tab.draw(self.canvas)
+
+    def new_tab(self, url):
+        new_tab = Tab()
+        new_tab.load(url)
+        self.active_tab = new_tab
+        self.tabs.append(new_tab)
+        self.draw()
 
 
 if __name__ == "__main__":
     import sys
 
     # コマンドライン引数からURLを取得して読み込みます
-    Browser().load(URL(sys.argv[1]))
+    Browser().new_tab(URL(sys.argv[1]))
     tkinter.mainloop()
