@@ -216,7 +216,6 @@ class Text:
         self.text = text
         self.children = []
         self.parent = parent
-        self.is_focused = False
 
     def __repr__(self):
         return repr(self.text)
@@ -949,6 +948,9 @@ class Chrome:
             self.tabbar_bottom,
         )
 
+    def blur(self):
+        self.focus = None
+
     def paint(self):
         cmds = []
         cmds.append(DrawRect(Rect(0, 0, WIDTH, self.bottom), "white"))
@@ -1034,9 +1036,6 @@ class Chrome:
             )
         return cmds
 
-    def blur(self):
-        self.focus = None
-
 
 class Browser:
     def __init__(self):
@@ -1069,12 +1068,17 @@ class Browser:
             self.active_tab.click(e.x, tab_y)
         self.draw()
 
+    def keypress(self, char):
+        if self.focus == "address bar":
+            self.address_bar += char
+            return True
+        return False
+
     def handle_key(self, e):
         if len(e.char) == 0:
             return
         if not (0x20 <= ord(e.char) < 0x7F):
             return
-
         if self.chrome.keypress(e.char):
             self.draw()
         elif self.focus == "content":
@@ -1113,7 +1117,14 @@ class Tab:
         self.url = None
         self.tab_height = tab_height
         self.history = []
+        self.rules = []
+        self.nodes = None
         self.focus = None
+
+    def keypress(self, char):
+        if self.focus:
+            self.focus.attributes["value"] += char
+            self.render()
 
     def click(self, x, y):
         self.focus = None
@@ -1136,9 +1147,9 @@ class Tab:
                 elt.attributes["value"] = ""
                 if self.focus:
                     self.focus.is_focused = False
-                    self.focus = elt
-                    elt.is_focused = True
-                    return self.render()
+                self.focus = elt
+                elt.is_focused = True
+                return self.render()
             elt = elt.parent
 
     def scrolldown(self):
@@ -1146,7 +1157,7 @@ class Tab:
         self.scroll = min(self.scroll + SCROLL_STEP, max_y)
 
     # URLからWebページを読み込み、表示する関数
-    def load(self, url, payload=None):
+    def load(self, url):
         self.scroll = 0
         self.history.append(url)
         self.url = url
@@ -1168,6 +1179,7 @@ class Tab:
             except:
                 continue
             self.rules.extend(CSSParser(body).parse())
+        style(self.nodes, sorted(self.rules, key=cascade_priority))
         self.render()
 
     def render(self):
@@ -1190,11 +1202,6 @@ class Tab:
             self.history.pop()
             back = self.history.pop()
             self.load(back)
-
-    def keypress(self, char):
-        if self.focus:
-            self.focus.attributes["value"] += char
-            self.render()
 
 
 if __name__ == "__main__":
