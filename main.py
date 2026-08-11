@@ -5,7 +5,7 @@ import urllib.parse
 import tkinter
 import tkinter.font
 from typing import Literal
-
+import dukpy
 
 WIDTH, HEIGHT = 800, 600
 HSTEP, VSTEP = 13, 18  # 水平・垂直ステップ
@@ -1199,7 +1199,26 @@ class Tab:
         self.url = url
         body = url.request(payload)
         self.nodes = HTMLParser(body).parse()
+        for node in tree_to_list(self.nodes, []):
+            print(node)
+        scripts = [
+            node.attributes["src"]
+            for node in tree_to_list(self.nodes, [])
+            if isinstance(node, Element)
+            and node.tag == "script"
+            and "src" in node.attributes
+        ]
+        print(scripts)
+        for script in scripts:
+            script_url = url.resolve(script)
+            try:
+                body = script_url.request()
+            except:
+                continue
+            print("Script returned: ", dukpy.evaljs(body))
+
         self.rules = DEFAULT_STYLE_SHEET.copy()
+
         links = [
             node.attributes["href"]
             for node in tree_to_list(self.nodes, [])
