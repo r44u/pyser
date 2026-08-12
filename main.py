@@ -1216,7 +1216,7 @@ class Tab:
                 body = script_url.request()
             except:
                 continue
-            self.js.run(body)
+            self.js.run(script, body)
             print("Script returned: ", dukpy.evaljs(body))
 
         self.rules = DEFAULT_STYLE_SHEET.copy()
@@ -1270,8 +1270,11 @@ class JSContext:
         self.interp.export_function("log", print)
         self.interp.evaljs(RUNTIME_JS)
 
-    def run(self, code):
-        return self.interp.evaljs(code)
+    def run(self, script, code):
+        try:
+            return self.interp.evaljs(code)
+        except dukpy.JSRuntimeError as e:
+            print("Script", script, "crashed", e)
 
 
 if __name__ == "__main__":
