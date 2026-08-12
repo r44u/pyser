@@ -1196,6 +1196,7 @@ class Tab:
     def load(self, url, payload=None):
         self.scroll = 0
         self.history.append(url)
+        self.js = JSContext()
         self.url = url
         body = url.request(payload)
         self.nodes = HTMLParser(body).parse()
@@ -1215,6 +1216,7 @@ class Tab:
                 body = script_url.request()
             except:
                 continue
+            self.js.run(body)
             print("Script returned: ", dukpy.evaljs(body))
 
         self.rules = DEFAULT_STYLE_SHEET.copy()
@@ -1257,6 +1259,19 @@ class Tab:
             self.history.pop()
             back = self.history.pop()
             self.load(back)
+
+
+RUNTIME_JS = open("runtime.js").read()
+
+
+class JSContext:
+    def __init__(self):
+        self.interp = dukpy.JSInterpreter()
+        self.interp.export_function("log", print)
+        self.interp.evaljs(RUNTIME_JS)
+
+    def run(self, code):
+        return self.interp.evaljs(code)
 
 
 if __name__ == "__main__":
