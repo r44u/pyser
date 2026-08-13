@@ -56,6 +56,7 @@ INHERITED_PROPERTIES = {
     "font-weight": "normal",
     "color": "black",
 }
+RUNTIME_JS = open("runtime.js").read()
 
 
 class DrawText:
@@ -1196,7 +1197,7 @@ class Tab:
     def load(self, url, payload=None):
         self.scroll = 0
         self.history.append(url)
-        self.js = JSContext()
+        self.js = JSContext(self)
         self.url = url
         body = url.request(payload)
         self.nodes = HTMLParser(body).parse()
@@ -1261,20 +1262,37 @@ class Tab:
             self.load(back)
 
 
-RUNTIME_JS = open("runtime.js").read()
-
-
 class JSContext:
-    def __init__(self):
+    def __init__(self, tab):
         self.interp = dukpy.JSInterpreter()
         self.interp.export_function("log", print)
         self.interp.evaljs(RUNTIME_JS)
+        self.interp.export_function("querySelectorAll", self.querySelectorAll)
+        self.tab = tab
+        self.node_to_handle = {}
+        self.handle_to_node = {}
 
     def run(self, script, code):
         try:
             return self.interp.evaljs(code)
         except dukpy.JSRuntimeError as e:
             print("Script", script, "crashed", e)
+
+    def querySelectorAll(self, selector_text):
+        selector = CSSParser(selector_text).selector()
+        nodes = [
+            node for node in tree_to_list(self.tab.nodes, []) if selector.matches(node)
+        ]
+        return [self.get_handle(node) for node in nodes]
+
+    def get_handle(self, elt):
+        if elt not in self.node_to_handle:
+            handle = len(self.node_to_handle)
+            self.node_to_handle[elt] = handle
+            self.handle_to_node[handle] = elt
+        else:
+            handle = self.node_to_handle[elt]
+        return handle
 
 
 if __name__ == "__main__":
