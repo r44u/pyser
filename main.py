@@ -1268,6 +1268,7 @@ class JSContext:
         self.interp.export_function("log", print)
         self.interp.evaljs(RUNTIME_JS)
         self.interp.export_function("querySelectorAll", self.querySelectorAll)
+        self.interp.export_function("getAttribute", self.getAttribute)
         self.tab = tab
         self.node_to_handle = {}
         self.handle_to_node = {}
@@ -1293,6 +1294,11 @@ class JSContext:
         else:
             handle = self.node_to_handle[elt]
         return handle
+
+    def getAttribute(self, handle, attr):
+        elt = self.handle_to_node[handle]
+        attr = elt.get_attributes.get(attr, None)
+        return attr if attr else ""
 
 
 if __name__ == "__main__":

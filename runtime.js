@@ -10,3 +10,7 @@ document = {
 function Node(handle) {
   this.handle = handle;
 }
+
+Node.prototype.getAttribute = function (attr) {
+  return call_python("getAttribute", this.handle, attr)
+}
