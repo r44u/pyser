@@ -1135,6 +1135,7 @@ class Tab:
 
     def keypress(self, char):
         if self.focus:
+            self.js.dispatch_event("keydown", self.focus)
             self.focus.attributes["value"] += char
             self.render()
 
@@ -1153,9 +1154,11 @@ class Tab:
             if isinstance(elt, Text):
                 pass
             elif elt.tag == "a" and "href" in elt.attributes:
+                self.js.dispatch_event("click", elt)
                 url = self.url.resolve(elt.attributes["href"])
                 return self.load(url)
             elif elt.tag == "input":
+                self.js.dispatch_event("click", elt)
                 elt.attributes["value"] = ""
                 if self.focus:
                     self.focus.is_focused = False
@@ -1163,6 +1166,7 @@ class Tab:
                 elt.is_focused = True
                 return self.render()
             elif elt.tag == "button":
+                self.js.dispatch_event("click", elt)
                 while elt:
                     if elt.tag == "form" and "action" in elt.attributes:
                         return self.submit_form(elt)
@@ -1170,6 +1174,7 @@ class Tab:
             elt = elt.parent
 
     def submit_form(self, elt):
+        self.js.dispatch_event("submit", elt)
         inputs = [
             node
             for node in tree_to_list(elt, [])
@@ -1262,6 +1267,9 @@ class Tab:
             self.load(back)
 
 
+EVENT_DISPATCH_JS = "new Node(dukpy.handle).dispatchEvent(dukpy.type)"
+
+
 class JSContext:
     def __init__(self, tab):
         self.interp = dukpy.JSInterpreter()
@@ -1299,6 +1307,10 @@ class JSContext:
         elt = self.handle_to_node[handle]
         attr = elt.get_attributes.get(attr, None)
         return attr if attr else ""
+
+    def dispatch_event(self, type, elt):
+        handle = self.node_to_handle.get(elt, -1)
+        self.interp.evaljs(EVENT_DISPATCH_JS, type=type, handle=handle)
 
 
 if __name__ == "__main__":
