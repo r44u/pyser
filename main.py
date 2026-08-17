@@ -1223,7 +1223,7 @@ class Tab:
             except:
                 continue
             self.js.run(script, body)
-            print("Script returned: ", dukpy.evaljs(body))
+            # print("Script returned: ", dukpy.evaljs(body))
 
         self.rules = DEFAULT_STYLE_SHEET.copy()
 
@@ -1277,6 +1277,7 @@ class JSContext:
         self.interp.evaljs(RUNTIME_JS)
         self.interp.export_function("querySelectorAll", self.querySelectorAll)
         self.interp.export_function("getAttribute", self.getAttribute)
+        self.interp.export_function("innerHTML_set", self.innerHTML_set)
         self.tab = tab
         self.node_to_handle = {}
         self.handle_to_node = {}
@@ -1305,12 +1306,21 @@ class JSContext:
 
     def getAttribute(self, handle, attr):
         elt = self.handle_to_node[handle]
-        attr = elt.get_attributes.get(attr, None)
+        attr = elt.attributes.get(attr, None)
         return attr if attr else ""
 
     def dispatch_event(self, type, elt):
         handle = self.node_to_handle.get(elt, -1)
         self.interp.evaljs(EVENT_DISPATCH_JS, type=type, handle=handle)
+
+    def innerHTML_set(self, handle, s):
+        doc = HTMLParser("<html><body>" + s + "</body></html>").parse()
+        new_nodes = doc.children[0].children
+        elt = self.handle_to_node[handle]
+        elt.children = new_nodes
+        for child in elt.children:
+            child.parent = elt
+        self.tab.render()
 
 
 if __name__ == "__main__":
