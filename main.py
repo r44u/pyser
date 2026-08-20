@@ -1295,6 +1295,7 @@ class JSContext:
         self.interp.export_function("querySelectorAll", self.querySelectorAll)
         self.interp.export_function("getAttribute", self.getAttribute)
         self.interp.export_function("innerHTML_set", self.innerHTML_set)
+        self.interp.export_function("XMLHttpRequest_send", self.XMLHttpRequest_send)
         self.tab = tab
         self.node_to_handle = {}
         self.handle_to_node = {}
@@ -1339,6 +1340,11 @@ class JSContext:
         for child in elt.children:
             child.parent = elt
         self.tab.render()
+
+    def XMLHttpRequest_send(self, method, url, body):
+        full_url = self.tab.url.resolve(url)
+        headers, out = full_url.request(body)
+        return out
 
 
 if __name__ == "__main__":
