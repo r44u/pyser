@@ -108,6 +108,9 @@ def get_font(size, weight, style):
     return FONTS[key][0]
 
 
+COOKIE_JAR = {}
+
+
 class URL:
     # コンストラクタ: URL文字列を受け取り、オブジェクトを初期化します
     def __init__(self, url):
@@ -165,6 +168,11 @@ class URL:
         if payload:
             length = len(payload.encode("utf8"))
             request += "Content-Length: {}\r\n".format(length)
+
+        if self.host in COOKIE_JAR:
+            cookie = COOKIE_JAR[self.host]
+            request += "Cookie: {}\r\n".format(cookie)
+
         # ヘッダーの終わりを示す空行を追加します
         request += "\r\n"
         if payload:
@@ -195,6 +203,10 @@ class URL:
         assert "transfer-encoding" not in response_headers
         # Content-Encodingヘッダーがないことを確認します
         assert "content-encoding" not in response_headers
+
+        if "set-cookie" in response_headers:
+            cookie = response_headers["set-cookie"]
+            COOKIE_JAR[self.host] = cookie
 
         content = response.read()
         # ソケットを閉じます
