@@ -234,6 +234,9 @@ class URL:
         else:
             return URL(self.scheme + "://" + self.host + ":" + str(self.port) + url)
 
+    def origin(self):
+        return self.scheme + "://" + self.host + ":" + str(self.port)
+
 
 class Text:
     def __init__(self, text, parent):
@@ -1344,6 +1347,11 @@ class JSContext:
     def XMLHttpRequest_send(self, method, url, body):
         full_url = self.tab.url.resolve(url)
         headers, out = full_url.request(body)
+
+        # 同一オリジンポリシーのチェック
+        if full_url.origin() != self.tab.url.origin():
+            raise Exception("Cross-origin XHR request not allowed")
+
         return out
 
 

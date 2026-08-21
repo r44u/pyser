@@ -41,12 +41,6 @@ Node.prototype.dispatchEvent = function (evt) {
   return evt.do_default;
 }
 
-Object.defineProperty(Node.prototype, 'innerHTML', {
-  set: function (s) {
-    call_python("innerHTML_set", this.handle, s.toString());
-  }
-});
-
 function XMLHttpRequest() { }
 
 XMLHttpRequest.prototype.open = function (method, url, is_async) {
@@ -58,3 +52,12 @@ XMLHttpRequest.prototype.open = function (method, url, is_async) {
 XMLHttpRequest.prototype.send = function (body) {
   this.responseText = call_python("XMLHttpRequest_send", this.method, this.url, body);
 }
+
+
+// この定義は一番下にしないと謎に落ちるから注意
+Object.defineProperty(Node.prototype, 'innerHTML', {
+  set: function (s) {
+    call_python("innerHTML_set", this.handle, s.toString());
+  }
+});
+
