@@ -143,7 +143,7 @@ class URL:
             port_part = ""
         return self.scheme + "://" + self.host + port_part + self.path
 
-    def request(self, payload=None):
+    def request(self, referrer, payload=None):
         # TCP/IPソケットを作成します
         s = socket.socket(
             family=socket.AF_INET,  # IPv4アドレスファミリー
@@ -170,8 +170,13 @@ class URL:
             request += "Content-Length: {}\r\n".format(length)
 
         if self.host in COOKIE_JAR:
-            cookie = COOKIE_JAR[self.host]
-            request += "Cookie: {}\r\n".format(cookie)
+            cookie, params = COOKIE_JAR[self.host]
+            allow_cookie = True
+            if referrer and params.get("samesite", "none") == "lax":
+                if method != "GET":
+                    allow_cookie = self.host == referrer.host
+            if allow_cookie:
+                request += "Cookie: {}\r\n".format(cookie)
 
         # ヘッダーの終わりを示す空行を追加します
         request += "\r\n"
@@ -206,14 +211,24 @@ class URL:
 
         if "set-cookie" in response_headers:
             cookie = response_headers["set-cookie"]
-            COOKIE_JAR[self.host] = cookie
+            params = {}
+            if ";" in cookie:
+                cookie, rest = cookie.split(";", 1)
+                for param in rest.split(";"):
+                    if "=" in param:
+                        param, value = param.split("=", 1)
+                    else:
+                        value = "true"
+                    params[param.strip().casefold()] = value.casefold()
+
+            COOKIE_JAR[self.host] = (cookie, params)
 
         content = response.read()
         # ソケットを閉じます
         s.close()
         # ... (ボディ読み取り、ソケットクローズ)
         # レスポンスのボディを返します
-        return content
+        return response_headers, content
 
     def resolve(self, url):
         # 通常のURL
@@ -1224,7 +1239,7 @@ class Tab:
         self.history.append(url)
         self.js = JSContext(self)
         self.url = url
-        body = url.request(payload)
+        headers, body = url.request(self.url, payload)
         self.nodes = HTMLParser(body).parse()
         for node in tree_to_list(self.nodes, []):
             print(node)
@@ -1239,7 +1254,7 @@ class Tab:
         for script in scripts:
             script_url = url.resolve(script)
             try:
-                body = script_url.request()
+                body = script_url.request(url)
             except:
                 continue
             self.js.run(script, body)
@@ -1258,7 +1273,7 @@ class Tab:
         for link in links:
             style_url = url.resolve(link)
             try:
-                body = style_url.request()
+                body = style_url.request(url)
             except:
                 continue
             self.rules.extend(CSSParser(body).parse())
@@ -1346,7 +1361,7 @@ class JSContext:
 
     def XMLHttpRequest_send(self, method, url, body):
         full_url = self.tab.url.resolve(url)
-        headers, out = full_url.request(body)
+        headers, out = full_url.request(self.tab.url, body)
 
         # 同一オリジンポリシーのチェック
         if full_url.origin() != self.tab.url.origin():
