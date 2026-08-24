@@ -42,6 +42,8 @@ def handle_connection(conx):
     if "cookie" not in headers:
         template = "Set-Cookie: token={}; SameSite=Lax\r\n"
         response += template.format(token)
+    csp = "default-src http://localhost:8000"
+    response += "Content-Security-Policy: {}\r\n".format(csp)
     response += "\r\n" + body
     conx.send(response.encode("utf8"))
     conx.close()
@@ -91,6 +93,7 @@ def show_comments(session):
         nonce = str(random.random())[2:]
         session["nonce"] = nonce
         out += "<script src=/comment.js></script>"
+        out += "<script src=https://example.com/evil.js></script>"
         out += "<h1>Hello, " + session["user"] + "</h1>"
         out += "<form action=add method=post>"
         out += "<p><input name=guest></p>"

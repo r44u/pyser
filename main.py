@@ -1241,6 +1241,15 @@ class Tab:
         self.url = url
         headers, body = url.request(self.url, payload)
         self.nodes = HTMLParser(body).parse()
+
+        self.allowed_origins = None
+        if "content-security-policy" in headers:
+            csp = headers["content-security-policy"].split()
+            if len(csp) > 0 and csp[0] == "default-src":
+                self.allowed_origins = []
+                for origin in csp[1:]:
+                    self.allowed_origins.append(URL(origin).origin())
+
         for node in tree_to_list(self.nodes, []):
             print(node)
         scripts = [
@@ -1253,6 +1262,9 @@ class Tab:
         print(scripts)
         for script in scripts:
             script_url = url.resolve(script)
+            if not self.allowed_request(script_url):
+                print("Blocked script", script, "duw to CSP")
+                continue
             try:
                 body = script_url.request(url)
             except:
@@ -1300,6 +1312,9 @@ class Tab:
             self.history.pop()
             back = self.history.pop()
             self.load(back)
+
+    def allowed_request(self, url):
+        return self.allowed_origins == None or url.origin() in self.allowed_origins
 
 
 EVENT_DISPATCH_JS = "new Node(dukpy.handle).dispatchEvent(new Event(dukpy.type))"
@@ -1361,6 +1376,8 @@ class JSContext:
 
     def XMLHttpRequest_send(self, method, url, body):
         full_url = self.tab.url.resolve(url)
+        if not self.tab.allowed_request(full_url):
+            raise Exception("Cross-origin XHR blocked by CSP")
         headers, out = full_url.request(self.tab.url, body)
 
         # 同一オリジンポリシーのチェック
