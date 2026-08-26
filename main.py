@@ -6,6 +6,9 @@ import tkinter
 import tkinter.font
 from typing import Literal
 import dukpy
+import ctypes
+import sdl2
+import skia
 
 WIDTH, HEIGHT = 800, 600
 HSTEP, VSTEP = 13, 18  # 水平・垂直ステップ
@@ -1081,21 +1084,19 @@ class Chrome:
 
 class Browser:
     def __init__(self):
+        self.sdl_window = sdl2.SDL_CreateWindow(
+            b"Browser",
+            sdl2.SDL_WINDOWPOS_CENTERED,
+            sdl2.SDL_WINDOWPOS_CENTERED,
+            WIDTH,
+            HEIGHT,
+            sdl2.SDL_WINDOW_SHOWN,
+        )
         self.tabs = []
         self.active_tab = None
-        self.window = tkinter.Tk()
-        self.canvas = tkinter.Canvas(
-            self.window, width=WIDTH, height=HEIGHT, bg="white"
-        )
-        self.canvas.pack()
-        self.window.bind("<Down>", self.handle_down)
-        self.window.bind("<Button-1>", self.handle_click)
-        self.window.bind("<Key>", self.handle_key)
-        self.window.bind("<Return>", self.handle_enter)
-        self.window.bind("<BackSpace>", self.handle_delete)
         self.chrome = Chrome(self)
 
-    def handle_down(self, e):
+    def handle_down(self):
         self.active_tab.scrolldown()
         self.draw()
 
@@ -1127,13 +1128,16 @@ class Browser:
             self.active_tab.keypress(e.char)
             self.draw()
 
-    def handle_enter(self, e):
+    def handle_enter(self):
         self.chrome.enter()
         self.draw()
 
     def handle_delete(self, e):
         self.chrome.delete()
         self.draw()
+
+    def handle_quit(self):
+        sdl2.SDL_DestroyWindow(self.sdl_window)
 
     def draw(self):
         self.canvas.delete("all")
@@ -1387,9 +1391,30 @@ class JSContext:
         return out
 
 
+def mainloop(browser):
+    event = sdl2.SDL_Event()
+    while True:
+        while sdl2.SDL_PollEvent(ctypes.byref(event)) != 0:
+            if event.type == sdl2.SDL_QUIT:
+                browser.handle_quit()
+                sdl2.SDL_Quit()
+                sys.exit()
+            elif event.type == sdl2.SDL_MOUSEBUTTONUP:
+                browser.handle_click(event.button)
+            elif event.type == sdl2.SDL_KEYDOWN:
+                if event.key.keysym == sdl2.SDLK_RETURN:
+                    browser.handle_enter()
+                elif event.key.keysym.sym == sdl2.SDLK_DOWN:
+                    browser.handle_down()
+            elif event.type == sdl2.SDL_TEXTINPUT:
+                browser.handle_key(event.text.text.decode("utf8"))
+
+
 if __name__ == "__main__":
     import sys
 
+    sdl2.SDL_Init(sdl2.SDL_INIT_EVENTS)
+    browser = Browser()
     # コマンドライン引数からURLを取得して読み込みます
-    Browser().new_tab(URL(sys.argv[1]))
-    tkinter.mainloop()
+    browser.new_tab(URL(sys.argv[1]))
+    mainloop(browser)
