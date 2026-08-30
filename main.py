@@ -142,8 +142,10 @@ class DrawText:
             AntiAlias=True,
             Color=parse_color(self.color),
         )
-        baseline = self.top - self.font.getMetrics().fAscent
-        canvas.drawString(self.text, float(self.left), baseline, self.font, paint)
+        baseline = self.rect.top() - self.font.getMetrics().fAscent
+        canvas.drawString(
+            self.text, float(self.rect.left()), baseline, self.font, paint
+        )
 
 
 class DrawRect:
@@ -1218,9 +1220,7 @@ class Browser:
                 WIDTH, HEIGHT, ct=skia.kRGBA_8888_ColorType, at=skia.kUnpremul_AlphaType
             )
         )
-        self.tab_surface = None
         self.chrome = Chrome(self)
-        self.chrome_surface = skia.Surface(WIDTH, math.ceil(self.chrome.bottom))
         if sdl2.SDL_BYTEORDER == sdl2.SDL_BIG_ENDIAN:
             self.RED_MASK = 0xFF000000
             self.GREEN_MASK = 0x00FF0000
@@ -1232,6 +1232,9 @@ class Browser:
             self.BLUE_MASK = 0x00FF0000
             self.ALPHA_MASK = 0xFF000000
         sdl2.SDL_StartTextInput()
+
+        self.chrome_surface = skia.Surface(WIDTH, math.ceil(self.chrome.bottom))
+        self.tab_surface = None
 
     def handle_quit(self):
         sdl2.SDL_DestroyWindow(self.sdl_window)
@@ -1271,6 +1274,7 @@ class Browser:
             self.draw()
         elif self.focus == "content":
             self.active_tab.keypress(char)
+            self.raster_tab()
             self.draw()
 
     def handle_enter(self):
@@ -1302,7 +1306,6 @@ class Browser:
         canvas.translate(0, tab_offset)
         self.tab_surface.draw(canvas, 0, 0)
         canvas.restore()
-
         chrome_rect = skia.Rect.MakeLTRB(0, 0, WIDTH, self.chrome.bottom)
         canvas.save()
         canvas.clipRect(chrome_rect)
