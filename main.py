@@ -171,6 +171,28 @@ class DrawRRect:
         canvas.drawRRect(self.rrect, paint=skia.Paint(Color=sk_color))
 
 
+def paint_visual_effects(node, cmds, rect):
+    opacity = float(node.style.get("opacity", "1.0"))
+
+    return [Opacity(opacity, cmds)]
+
+
+class Opacity:
+    def __init__(self, opacity, children):
+        self.opacity = opacity
+        self.children = children
+        self.rect = skia.Rect.MakeEmpty()
+        for cmd in self.children:
+            self.rect.join(cmd.rect)
+
+    def execute(self, canvas):
+        paint = skia.Paint(Alphaf=self.opacity)
+        canvas.saveLayer(None, paint)
+        for cmd in self.children:
+            cmd.execute(canvas)
+        canvas.restore()
+
+
 def getMetric(font, what):
     return font.getMetrics()[what]
 
@@ -358,10 +380,15 @@ def print_tree(node, indent=0):
 
 
 def paint_tree(layout_object, display_list):
+    cmds = []
     if layout_object.should_paint():
-        display_list.extend(layout_object.paint())
+        cmds = layout_object.paint()
     for child in layout_object.children:
-        paint_tree(child, display_list)
+        paint_tree(child, cmds)
+
+    if layout_object.should_paint():
+        cmds = layout_object.paint_effects(cmds)
+    display_list.extend(cmds)
 
 
 def tree_to_list(tree, list):
@@ -671,6 +698,9 @@ class DocumentLayout:
     def paint(self):
         return []
 
+    def paint_effects(self, cmds):
+        return cmds
+
 
 class BlockLayout:
     def __init__(self, node, parent, previous):
@@ -818,6 +848,10 @@ class BlockLayout:
             cmds.append(DrawRRect(self.self_rect(), radius, bgcolor))
         return cmds
 
+    def paint_effects(self, cmds):
+        cmds = paint_visual_effects(self.node, cmds, self.self_rect())
+        return cmds
+
 
 class LineLayout:
     def __init__(self, node, parent, previous):
@@ -852,6 +886,9 @@ class LineLayout:
 
     def paint(self):
         return []
+
+    def paint_effects(self, cmds):
+        return cmds
 
 
 def linespace(font):
@@ -917,6 +954,9 @@ class InputLayout:
         cmds.append(DrawText(self.x, self.y, text, self.font, color))
         return cmds
 
+    def paint_effects(self, cmds):
+        return cmds
+
 
 class TextLayout:
     def __init__(self, node, word, parent, previous):
@@ -947,6 +987,9 @@ class TextLayout:
     def paint(self):
         color = self.node.style["color"]
         return [DrawText(self.x, self.y, self.word, self.font, color)]
+
+    def paint_effects(self, cmds):
+        return cmds
 
 
 DEFAULT_STYLE_SHEET = CSSParser(open("browser.css").read()).parse()
@@ -1197,14 +1240,14 @@ def parse_color(color):
         g = int(color[3:5], 16)
         b = int(color[5:7], 16)
         return skia.Color(r, g, b)
-    elif color in NAMED_COLORS:
-        return parse_color(NAMED_COLORS[color])
     elif color.startswith("#") and len(color) == 9:
         r = int(color[1:3], 16)
         g = int(color[3:5], 16)
         b = int(color[5:7], 16)
         a = int(color[7:9], 16)
         return skia.Color(r, g, b, a)
+    elif color in NAMED_COLORS:
+        return parse_color(NAMED_COLORS[color])
     else:
         return skia.ColorBLACK
 
