@@ -66,6 +66,8 @@ def do_request(session, method, url, headers, body):
         params = form_decode(body)
         add_entry(session, params)
         return "200 OK", show_comments(session)
+    elif method == "GET" and url == "/clip":
+        return "200 OK", clip_mask_example()
     elif method == "POST" and url == "/":
         params = form_decode(body)
         return do_login(session, params)
@@ -105,6 +107,35 @@ def show_comments(session):
     else:
         out += "<a href=/login>Sign in to write in the guest book</a>"
     return out
+
+
+def clip_mask_example():
+    return """
+    <!doctype html>
+    <div
+      style="border-radius:30px;background-color:lightblue;overflow:clip">
+        This test text exists here to ensure that the "div" element is
+        large enough that the border radius is obvious.
+                This test text exists here to ensure that the "div" element is
+        large enough that the border radius is obvious.
+        This test text exists here to ensure that the "div" element is
+        large enough that the border radius is obvious.
+        This test text exists here to ensure that the "div" element is
+        large enough that the border radius is obvious.
+        This test text exists here to ensure that the "div" element is
+        large enough that the border radius is obvious.
+
+        This test text exists here to ensure that the "div" element is
+        large enough that the border radius is obvious.
+        This test text exists here to ensure that the "div" element is
+        large enough that the border radius is obvious.
+        This test text exists here to ensure that the "div" element is
+        large enough that the border radius is obvious.
+        This test text exists here to ensure that the "div" element is
+        large enough that the border radius is obvious.
+
+    </div>
+    """
 
 
 def show_transparent_example():
