@@ -1337,6 +1337,8 @@ def mainloop(browser):
             elif event.type == sdl2.SDL_TEXTINPUT:
                 browser.handle_key(event.text.text.decode("utf8"))
         browser.active_tab.task_runner.run()
+        browser.raster_and_draw()
+        browser.schedule_animation_frame()
 
 
 NAMED_COLORS = {
@@ -1369,6 +1371,9 @@ def parse_color(color):
         return parse_color(NAMED_COLORS[color])
     else:
         return skia.ColorBLACK
+
+
+REFRESH_RATE_SEC = 0.033
 
 
 class Browser:
@@ -1512,6 +1517,19 @@ class Browser:
         self.draw()
         for cmd in self.chrome.paint():
             cmd.execute(canvas)
+
+    def raster_and_draw(self):
+        self.raster_chrome()
+        self.raster_tab()
+        self.draw()
+
+    def schedule_animation_frame(self):
+        def callback():
+            active_tab = self.active_tab
+            task = Task(active_tab.render)
+            active_tab.task_runner.schedule_task(task)
+
+        threading.Timer(REFRESH_RATE_SEC, callback).start()
 
 
 class Tab:
