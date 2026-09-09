@@ -68,6 +68,11 @@ def do_request(session, method, url, headers, body):
         return "200 OK", show_comments(session)
     elif method == "GET" and url == "/clip":
         return "200 OK", clip_mask_example()
+    elif method == "GET" and url == "/count":
+        return "200 OK", show_count()
+    elif method == "GET" and url == "/eventloop.js":
+        with open("eventloop.js") as f:
+            return "200 OK", f.read()
     elif method == "POST" and url == "/":
         params = form_decode(body)
         return do_login(session, params)
@@ -185,6 +190,16 @@ def login_form(session):
     body += "<p><button>Log in</button></p>"
     body += "</form>"
     return body
+
+
+def show_count():
+    out = "<!doctype html>"
+    out += "<div>"
+    out += " Let's count up to 99"
+    out += "</div>"
+    out += "<div>Output</div>"
+    out += "<script src=/eventloop.js></script>"
+    return out
 
 
 s = socket.socket(

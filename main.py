@@ -79,6 +79,7 @@ class JSContext:
         self.node_to_handle = {}
         self.handle_to_node = {}
         self.interp.export_function("setTimeout", self.setTimeout)
+        self.interp.export_function("requestAnimationFrame", self.requestAnimationFrame)
         self.discarded = False
 
     def get_handle(self, elt):
@@ -151,6 +152,9 @@ class JSContext:
             self.tab.task_runner.schedule_task(task)
 
         threading.Timer(time / 1000.0, run_callback).start()
+
+    def requestAnimationFrame(self):
+        self.tab.browser.set_needs_animation_frame(self.tab)
 
     def run(self, script, code):
         try:
@@ -1380,6 +1384,7 @@ REFRESH_RATE_SEC = 0.033
 
 class Browser:
     def __init__(self):
+        self.animation_timer = None
         self.needs_raster_and_draw = False
         self.tabs = []
         self.active_tab = None
@@ -1411,9 +1416,14 @@ class Browser:
 
         self.chrome_surface = skia.Surface(WIDTH, math.ceil(self.chrome.bottom))
         self.tab_surface = None
+        self.needs_animation_frame = True
 
     def set_needs_raster_and_draw(self):
         self.needs_raster_and_draw = True
+
+    def set_needs_animation_frame(self, tab):
+        if tab == self.active_tab:
+            self.needs_animation_frame = True
 
     def handle_quit(self):
         sdl2.SDL_DestroyWindow(self.sdl_window)
@@ -1539,7 +1549,9 @@ class Browser:
             task = Task(active_tab.render)
             active_tab.task_runner.schedule_task(task)
 
-        threading.Timer(REFRESH_RATE_SEC, callback).start()
+        if self.needs_animation_frame and not self.animation_timer:
+            self.animation_timer = threading.Timer(REFRESH_RATE_SEC, callback)
+            self.animation_timer.start()
 
 
 class Tab:
@@ -1559,6 +1571,7 @@ class Tab:
 
     def set_needs_render(self):
         self.needs_render = True
+        self.browser.set_needs_animation_frame(self)
 
     def keypress(self, char):
         if self.focus:
@@ -1689,6 +1702,7 @@ class Tab:
         self.set_needs_render()
 
     def render(self):
+        self.js.interp.evaljs("__runRAFHandlers()")
         if not self.needs_render:
             return
         style(self.nodes, sorted(self.rules, key=cascade_priority))
