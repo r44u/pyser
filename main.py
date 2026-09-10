@@ -7,6 +7,7 @@ import sdl2
 import skia
 import math
 import threading
+import time
 
 
 WIDTH, HEIGHT = 800, 600
@@ -72,7 +73,9 @@ class JSContext:
     def __init__(self, tab):
         self.tab = tab
         self.interp = dukpy.JSInterpreter()
+        self.tab.browser.measure.time("script-runtime")
         self.interp.evaljs(RUNTIME_JS)
+        self.tab.browser.measure.stop("script-runtime")
         self.interp.export_function("log", print)
         self.interp.export_function("querySelectorAll", self.querySelectorAll)
         self.interp.export_function("getAttribute", self.getAttribute)
@@ -140,12 +143,16 @@ class JSContext:
     def dispatch_xhr_onload(self, out, handle):
         if self.discarded:
             return
+        self.tab.browser.measure.time("script-xhr")
         do_default = self.interp.evaljs(XHR_ONLOAD_JS, out=out, handle=handle)
+        self.tab.browser.measure.stop("script-xhr")
 
     def dispatch_settimeout(self, handle):
         if self.discarded:
             return
+        self.tab.browser.measure.time("script-settimeout")
         self.interp.evaljs(SETTIMEOUT_JS, handle=handle)
+        self.tab.browser.measure.stop("script-settimeout")
 
     def setTimeout(self, handle, time):
         def run_callback():
@@ -159,8 +166,11 @@ class JSContext:
 
     def run(self, script, code):
         try:
+            self.tab.browser.measure.time("script-load")
             self.interp.evaljs(code)
+            self.tab.browser.measure.stop("script-load")
         except dukpy.JSRuntimeError as e:
+            self.tab.browser.measure.stop("script-load")
             print("Script", script, "crashed", e)
 
 
@@ -1382,6 +1392,7 @@ class TaskRunner:
 
 class Browser:
     def __init__(self):
+        self.measure = MeasureTime()
         self.animation_timer = None
         self.tabs = []
         self.active_tab = None
@@ -1416,6 +1427,7 @@ class Browser:
         self.needs_animation_frame = True
 
     def handle_quit(self):
+        self.measure.finish()
         sdl2.SDL_DestroyWindow(self.sdl_window)
 
     def handle_down(self):
@@ -1478,9 +1490,11 @@ class Browser:
     def raster_and_draw(self):
         if not self.needs_raster_and_draw:
             return
+        self.measure.time("raster/draw")
         self.raster_chrome()
         self.raster_tab()
         self.draw()
+        self.measure.stop("raster/draw")
         self.needs_raster_and_draw = False
 
     def raster_tab(self):
@@ -1706,6 +1720,7 @@ class Tab:
         self.js.interp.evaljs("__runRAFHandlers()")
         if not self.needs_render:
             return
+        self.browser.measure.time("render")
         style(self.nodes, sorted(self.rules, key=cascade_priority))
         self.document = DocumentLayout(self.nodes)
         self.document.layout()
@@ -1713,6 +1728,7 @@ class Tab:
         paint_tree(self.document, self.display_list)
         self.needs_render = False
         self.browser.set_needs_raster_and_draw()
+        self.browser.measure.stop("render")
 
     def raster(self, canvas):
         for cmd in self.display_list:
@@ -1723,6 +1739,55 @@ class Tab:
             self.history.pop()
             back = self.history.pop()
             self.load(back)
+
+
+class MeasureTime:
+    def __init__(self):
+        self.file = open("browser.trace", "w")
+        self.file.write('{"traceEvents": [')
+        ts = time.time() * 1000000
+        self.file.write(
+            '{ "name": "process_name",'
+            + '"ph": "M",'
+            + '"ts": '
+            + str(ts)
+            + ","
+            + '"pid": 1, "cat": "__metadata",'
+            + '"args": {"name": "Browser"}}'
+        )
+        self.file.flush()
+
+    def time(self, name):
+        ts = time.time() * 1000000
+        self.file.write(
+            ', { "ph": "B", "cat": "_",'
+            + '"name": "'
+            + name
+            + '",'
+            + '"ts": '
+            + str(ts)
+            + ","
+            + '"pid": 1, "tid": 1}'
+        )
+        self.file.flush()
+
+    def stop(self, name):
+        ts = time.time() * 1000000
+        self.file.write(
+            ', { "ph": "E", "cat": "_",'
+            + '"name": "'
+            + name
+            + '",'
+            + '"ts": '
+            + str(ts)
+            + ","
+            + '"pid": 1, "tid": 1}'
+        )
+        self.file.flush()
+
+    def finish(self):
+        self.file.write("]}")
+        self.file.close()
 
 
 if __name__ == "__main__":
