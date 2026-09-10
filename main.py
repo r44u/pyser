@@ -65,6 +65,8 @@ EVENT_DISPATCH_JS = "new Node(dukpy.handle).dispatchEvent(new Event(dukpy.type))
 SETTIMEOUT_JS = "__runSetTimeout(dukpy.handle)"
 XHR_ONLOAD_JS = "__runXHROnload(dukpy.out, dukpy.handle)"
 
+REFRESH_RATE_SEC = 0.033
+
 
 class JSContext:
     def __init__(self, tab):
@@ -76,10 +78,10 @@ class JSContext:
         self.interp.export_function("getAttribute", self.getAttribute)
         self.interp.export_function("innerHTML_set", self.innerHTML_set)
         self.interp.export_function("XMLHttpRequest_send", self.XMLHttpRequest_send)
+        self.interp.export_function("requestAnimationFrame", self.requestAnimationFrame)
         self.node_to_handle = {}
         self.handle_to_node = {}
         self.interp.export_function("setTimeout", self.setTimeout)
-        self.interp.export_function("requestAnimationFrame", self.requestAnimationFrame)
         self.discarded = False
 
     def get_handle(self, elt):
@@ -135,16 +137,15 @@ class JSContext:
         else:
             threading.Thread(target=run_load).start()
 
-    def dispatch_settimeout(self, handle):
-        if self.js:
-            self.js.discarded = True
-        self.js = JSContext(self)
-        self.interp.evaljs(SETTIMEOUT_JS, handle=handle)
-
     def dispatch_xhr_onload(self, out, handle):
         if self.discarded:
             return
         do_default = self.interp.evaljs(XHR_ONLOAD_JS, out=out, handle=handle)
+
+    def dispatch_settimeout(self, handle):
+        if self.discarded:
+            return
+        self.interp.evaljs(SETTIMEOUT_JS, handle=handle)
 
     def setTimeout(self, handle, time):
         def run_callback():
@@ -211,7 +212,6 @@ class DrawRRect:
 def paint_visual_effects(node, cmds, rect):
     opacity = float(node.style.get("opacity", "1.0"))
     blend_mode = node.style.get("mix-blend-mode")
-
     if node.style.get("overflow", "visible") == "clip":
         if not blend_mode:
             blend_mode = "source-over"
@@ -231,7 +231,9 @@ class Opacity:
             self.rect.join(cmd.rect)
 
     def execute(self, canvas):
-        paint = skia.Paint(Alphaf=self.opacity)
+        paint = skia.Paint(
+            Alphaf=self.opacity,
+        )
         if self.opacity < 1:
             canvas.saveLayer(None, paint)
         for cmd in self.children:
@@ -240,47 +242,31 @@ class Opacity:
             canvas.restore()
 
 
+class Blend:
+    def __init__(self, opacity, blend_mode, children):
+        self.opacity = opacity
+        self.blend_mode = blend_mode
+        self.should_save = self.blend_mode or self.opacity < 1
+        self.children = children
+        self.rect = skia.Rect.MakeEmpty()
+        for cmd in self.children:
+            self.rect.join(cmd.rect)
+
+    def execute(self, canvas):
+        paint = skia.Paint(
+            Alphaf=self.opacity,
+            BlendMode=parse_blend_mode(self.blend_mode),
+        )
+        if self.should_save:
+            canvas.saveLayer(None, paint)
+        for cmd in self.children:
+            cmd.execute(canvas)
+        if self.should_save:
+            canvas.restore()
+
+
 def getMetric(font, what):
     return font.getMetrics()[what]
-
-
-class Task:
-    def __init__(self, task_code, *args):
-        self.task_code = task_code
-        self.args = args
-
-    def run(self):
-        self.task_code(*self.args)
-        self.task_code = None
-        self.args = None
-
-
-class TaskRunner:
-    def __init__(self, tab):
-        self.tab = tab
-        self.tasks = []
-        self.condition = threading.Condition()
-
-    def schedule_task(self, task):
-        self.condition.acquire(blocking=True)
-        self.tasks.append(task)
-        self.condition.notify_all()
-        self.condition.release()
-
-    def run(self):
-        task = None
-        self.condition.acquire(blocking=True)
-        if len(self.tasks) > 0:
-            task = self.tasks.pop(0)
-        self.condition.release()
-        if task:
-            task.run()
-
-        self.condition.acquire(blocking=True)
-        if len(self.tasks) == 0:
-            pass
-            # self.condition.wait()
-        self.condition.release()
 
 
 def get_font(size, weight, style):
@@ -611,42 +597,6 @@ class HTMLParser:
 def cascade_priority(rule):
     selector, body = rule
     return selector.priority
-
-
-def parse_blend_mode(blend_mode_str):
-    if blend_mode_str == "multiply":
-        return skia.BlendMode.kMultiply
-    elif blend_mode_str == "difference":
-        return skia.BlendMode.kDifference
-    elif blend_mode_str == "destination-in":
-        return skia.BlendMode.kDstIn
-    elif blend_mode_str == "source-over":
-        return skia.BlendMode.kSrcOver
-    else:
-        return skia.BlendMode.kSrcOver
-
-
-class Blend:
-    def __init__(self, opacity, blend_mode, children) -> None:
-        self.opacity = opacity
-        self.blend_mode = blend_mode
-        self.should_save = self.blend_mode or self.opacity < 1
-        self.children = children
-        self.rect = skia.Rect.MakeEmpty()
-        for cmd in self.children:
-            self.rect.join(cmd.rect)
-
-    def execute(self, canvas):
-        paint = skia.Paint(
-            Alphaf=self.opacity,
-            BlendMode=parse_blend_mode(self.blend_mode),
-        )
-        if self.should_save:
-            canvas.saveLayer(None, paint)
-        for cmd in self.children:
-            cmd.execute(canvas)
-        if self.should_save:
-            canvas.restore()
 
 
 class TagSelector:
@@ -1379,13 +1329,60 @@ def parse_color(color):
         return skia.ColorBLACK
 
 
-REFRESH_RATE_SEC = 0.033
+def parse_blend_mode(blend_mode_str):
+    if blend_mode_str == "multiply":
+        return skia.BlendMode.kMultiply
+    elif blend_mode_str == "difference":
+        return skia.BlendMode.kDifference
+    elif blend_mode_str == "destination-in":
+        return skia.BlendMode.kDstIn
+    elif blend_mode_str == "source-over":
+        return skia.BlendMode.kSrcOver
+    else:
+        return skia.BlendMode.kSrcOver
+
+
+class Task:
+    def __init__(self, task_code, *args):
+        self.task_code = task_code
+        self.args = args
+
+    def run(self):
+        self.task_code(*self.args)
+        self.task_code = None
+        self.args = None
+
+
+class TaskRunner:
+    def __init__(self, tab):
+        self.tab = tab
+        self.tasks = []
+        self.condition = threading.Condition()
+
+    def schedule_task(self, task):
+        self.condition.acquire(blocking=True)
+        self.tasks.append(task)
+        self.condition.notify_all()
+        self.condition.release()
+
+    def run(self):
+        task = None
+        self.condition.acquire(blocking=True)
+        if len(self.tasks) > 0:
+            task = self.tasks.pop(0)
+        self.condition.release()
+        if task:
+            task.run()
+        self.condition.acquire(blocking=True)
+        if len(self.tasks) == 0:
+            pass
+            # self.condition.wait()
+        self.condition.release()
 
 
 class Browser:
     def __init__(self):
         self.animation_timer = None
-        self.needs_raster_and_draw = False
         self.tabs = []
         self.active_tab = None
         self.sdl_window = sdl2.SDL_CreateWindow(
@@ -1417,13 +1414,6 @@ class Browser:
         self.chrome_surface = skia.Surface(WIDTH, math.ceil(self.chrome.bottom))
         self.tab_surface = None
         self.needs_animation_frame = True
-
-    def set_needs_raster_and_draw(self):
-        self.needs_raster_and_draw = True
-
-    def set_needs_animation_frame(self, tab):
-        if tab == self.active_tab:
-            self.needs_animation_frame = True
 
     def handle_quit(self):
         sdl2.SDL_DestroyWindow(self.sdl_window)
@@ -1469,6 +1459,29 @@ class Browser:
     def handle_enter(self):
         if self.chrome.enter():
             self.set_needs_raster_and_draw()
+
+    def schedule_animation_frame(self):
+        def callback():
+            self.needs_animation_frame = False
+            self.animation_timer = None
+            active_tab = self.active_tab
+            task = Task(active_tab.render)
+            active_tab.task_runner.schedule_task(task)
+
+        if self.needs_animation_frame and not self.animation_timer:
+            self.animation_timer = threading.Timer(REFRESH_RATE_SEC, callback)
+            self.animation_timer.start()
+
+    def set_needs_raster_and_draw(self):
+        self.needs_raster_and_draw = True
+
+    def raster_and_draw(self):
+        if not self.needs_raster_and_draw:
+            return
+        self.raster_chrome()
+        self.raster_tab()
+        self.draw()
+        self.needs_raster_and_draw = False
 
     def raster_tab(self):
         tab_height = math.ceil(self.active_tab.document.height + 2 * VSTEP)
@@ -1535,23 +1548,9 @@ class Browser:
         for cmd in self.chrome.paint():
             cmd.execute(canvas)
 
-    def raster_and_draw(self):
-        if not self.needs_raster_and_draw:
-            return
-        self.raster_chrome()
-        self.raster_tab()
-        self.draw()
-        self.needs_raster_and_draw = False
-
-    def schedule_animation_frame(self):
-        def callback():
-            active_tab = self.active_tab
-            task = Task(active_tab.render)
-            active_tab.task_runner.schedule_task(task)
-
-        if self.needs_animation_frame and not self.animation_timer:
-            self.animation_timer = threading.Timer(REFRESH_RATE_SEC, callback)
-            self.animation_timer.start()
+    def set_needs_animation_frame(self, tab):
+        if tab == self.active_tab:
+            self.needs_animation_frame = True
 
 
 class Tab:
@@ -1566,6 +1565,7 @@ class Tab:
         self.nodes = None
         self.focus = None
         self.task_runner = TaskRunner(self)
+        self.js = None
         self.needs_render = False
         self.browser = browser
 
@@ -1669,6 +1669,8 @@ class Tab:
             and node.tag == "script"
             and "src" in node.attributes
         ]
+        if self.js:
+            self.js.discarded = True
         self.js = JSContext(self)
         for script in scripts:
             script_url = url.resolve(script)
@@ -1681,7 +1683,6 @@ class Tab:
                 continue
             task = Task(self.js.run, script_url, body)
             self.task_runner.schedule_task(task)
-            # print("Script returned: ", self.js.run(script, body))
         self.rules = DEFAULT_STYLE_SHEET.copy()
         links = [
             node.attributes["href"]
