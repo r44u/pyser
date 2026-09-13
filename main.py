@@ -1302,7 +1302,6 @@ def mainloop(browser):
                     browser.handle_down()
             elif event.type == sdl2.SDL_TEXTINPUT:
                 browser.handle_key(event.text.text.decode("utf8"))
-        browser.active_tab.task_runner.run()
         browser.raster_and_draw()
         browser.schedule_animation_frame()
 
@@ -1368,29 +1367,20 @@ class TaskRunner:
         self.tab = tab
         self.tasks = []
         self.condition = threading.Condition()
-        self.main_thread = threading.Thread(target=self.run, name="Main thread")
+        self.main_thread = threading.Thread(
+            target=self.run,
+            name="Main thread",
+        )
+        self.needs_quit = False
+
+    def start_thread(self):
+        self.main_thread.start()
 
     def schedule_task(self, task):
         self.condition.acquire(blocking=True)
         self.tasks.append(task)
         self.condition.notify_all()
         self.condition.release()
-
-    def start_threading(self):
-        self.main_thread.start()
-
-    def run(self):
-        while True:
-            self.condition.acquire(blocking=True)
-            needs_quit = self.needs_quit
-            self.condition.release()
-            if needs_quit:
-                return
-
-            self.condition.acquire(blocking=True)
-            if len(self.tasks) == 0 and not self.needs_quit:
-                self.condition.wait()
-            self.condition.release()
 
     def set_needs_quit(self):
         self.condition.acquire(blocking=True)
@@ -1401,7 +1391,27 @@ class TaskRunner:
     def clear_pending_tasks(self):
         self.condition.acquire(blocking=True)
         self.tasks.clear()
+        self.pending_scroll = None
         self.condition.release()
+
+    def run(self):
+        while True:
+            task = None
+            self.condition.acquire(blocking=True)
+            needs_quit = self.needs_quit
+            self.condition.release()
+            if needs_quit:
+                return
+            self.condition.acquire(blocking=True)
+            if len(self.tasks) > 0:
+                task = self.tasks.pop(0)
+            self.condition.release()
+            if task:
+                task.run()
+            self.condition.acquire(blocking=True)
+            if len(self.tasks) == 0 and not self.needs_quit:
+                self.condition.wait()
+            self.condition.release()
 
 
 class Browser:
@@ -1409,6 +1419,7 @@ class Browser:
         self.measure = MeasureTime()
         self.animation_timer = None
         self.tabs = []
+        self.lock = threading.Lock()
         self.active_tab = None
         self.sdl_window = sdl2.SDL_CreateWindow(
             b"Browser",
@@ -1435,22 +1446,17 @@ class Browser:
             self.BLUE_MASK = 0x00FF0000
             self.ALPHA_MASK = 0xFF000000
         sdl2.SDL_StartTextInput()
-        self.lock = threading.Lock()
 
         self.chrome_surface = skia.Surface(WIDTH, math.ceil(self.chrome.bottom))
         self.tab_surface = None
         self.needs_animation_frame = True
+        self.needs_raster_and_draw = False
         threading.current_thread().name = "Browser thread"
 
-    def schedule_load(self, url, body=None):
-        self.active_tab.task_runner.clear_pending_tasks()
-        task = Task(self.active_tab.load, url, body)
-        self.active_tab.task_runner.schedule_task(task)
-
     def handle_quit(self):
+        self.measure.finish()
         for tab in self.tabs:
             tab.task_runner.set_needs_quit()
-        self.measure.finish()
         sdl2.SDL_DestroyWindow(self.sdl_window)
 
     def handle_down(self):
@@ -1458,7 +1464,6 @@ class Browser:
         self.draw()
 
     def handle_click(self, e):
-        self.lock.acquire(blocking=True)
         if e.y < self.chrome.bottom:
             self.focus = None
             self.chrome.click(e.x, e.y)
@@ -1468,13 +1473,9 @@ class Browser:
             self.chrome.blur()
             url = self.active_tab.url
             tab_y = e.y - self.chrome.bottom
+            tab_y = e.y - self.chrome.bottom
             task = Task(self.active_tab.click, e.x, tab_y)
             self.active_tab.task_runner.schedule_task(task)
-            self.lock.release()
-            self.active_tab.click(e.x, tab_y)
-            if self.active_tab.url != url:
-                self.raster_chrome()
-            self.raster_tab()
         self.draw()
 
     def keypress(self, char):
@@ -1493,9 +1494,6 @@ class Browser:
         elif self.focus == "content":
             task = Task(self.active_tab.keypress, char)
             self.active_tab.task_runner.schedule_task(task)
-            self.active_tab.keypress(char)
-            self.raster_tab()
-            self.draw()
 
     def handle_enter(self):
         if self.chrome.enter():
@@ -1578,16 +1576,24 @@ class Browser:
         sdl2.SDL_BlitSurface(sdl_surface, rect, window_surface, rect)
         sdl2.SDL_UpdateWindowSurface(self.sdl_window)
 
-    def new_tab(self, url):
-        self.lock.acquire(blocking=True)
-        self.new_tab_internal(url)
-        self.lock.release()
+    def schedule_load(self, url, body=None):
+        self.active_tab.task_runner.clear_pending_tasks()
+        task = Task(self.active_tab.load, url, body)
+        self.active_tab.task_runner.schedule_task(task)
+
+    def set_active_tab(self, new_tab):
+        self.active_tab = new_tab
 
     def new_tab_internal(self, url):
         new_tab = Tab(self, HEIGHT - self.chrome.bottom)
         self.tabs.append(new_tab)
         self.set_active_tab(new_tab)
         self.schedule_load(url)
+
+    def new_tab(self, url):
+        self.lock.acquire(blocking=True)
+        self.new_tab_internal(url)
+        self.lock.release()
 
     def set_needs_animation_frame(self, tab):
         if tab == self.active_tab:
@@ -1606,6 +1612,7 @@ class Tab:
         self.nodes = None
         self.focus = None
         self.task_runner = TaskRunner(self)
+        self.task_runner.start_thread()
         self.js = None
         self.needs_render = False
         self.browser = browser
@@ -1755,6 +1762,7 @@ class Tab:
         paint_tree(self.document, self.display_list)
         self.needs_render = False
         self.browser.set_needs_raster_and_draw()
+        browser.animation_timer = None
         self.browser.measure.stop("render")
 
     def raster(self, canvas):
