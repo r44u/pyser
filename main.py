@@ -1461,14 +1461,13 @@ class Browser:
         self.lock.acquire(blocking=True)
         if tab == self.active_tab:
             self.active_tab_url = data.url
-            self.active_tab_scroll = data.scroll
+            if data.scroll != None:
+                self.active_tab_scroll = data.scroll
             self.active_tab_height = data.height
             if data.display_list is not None:
                 self.active_tab_display_list = data.display_list
             self.animation_timer = None
             self.set_needs_raster_and_draw()
-            if data.scroll != None:
-                self.active_tab_scroll = data.scroll
         self.lock.release()
 
     def handle_quit(self):
@@ -1476,6 +1475,11 @@ class Browser:
         for tab in self.tabs:
             tab.task_runner.set_needs_quit()
         sdl2.SDL_DestroyWindow(self.sdl_window)
+
+    def clamp_scroll(self, scroll):
+        height = self.active_tab_height
+        maxscroll = height - (HEIGHT - self.chrome.bottom)
+        return max(0, min(scroll, maxscroll))
 
     def handle_down(self):
         self.lock.acquire(blocking=True)
@@ -1501,7 +1505,6 @@ class Browser:
             tab_y = e.y - self.chrome.bottom
             task = Task(self.active_tab.click, e.x, tab_y)
             self.active_tab.task_runner.schedule_task(task)
-        self.draw()
         self.lock.release()
 
     def keypress(self, char):
@@ -1552,7 +1555,9 @@ class Browser:
         self.needs_raster_and_draw = True
 
     def raster_and_draw(self):
+        self.lock.acquire(blocking=True)
         if not self.needs_raster_and_draw:
+            self.lock.release()
             return
         self.measure.time("raster/draw")
         self.raster_chrome()
@@ -1560,6 +1565,7 @@ class Browser:
         self.draw()
         self.measure.stop("raster/draw")
         self.needs_raster_and_draw = False
+        self.lock.release()
 
     def raster_tab(self):
         if self.active_tab_height == None:
@@ -1646,11 +1652,6 @@ class Browser:
             self.needs_animation_frame = True
         self.lock.release()
 
-    def clamp_scroll(self, scroll):
-        height = self.active_tab_height
-        maxscroll = height - (HEIGHT - self.chrome.bottom)
-        return max(0, min(scroll, maxscroll))
-
 
 class Tab:
     def __init__(self, browser, tab_height):
@@ -1669,6 +1670,11 @@ class Tab:
         self.needs_render = False
         self.browser = browser
         self.scroll_changed_in_tab = False
+
+    def clamp_scroll(self, scroll):
+        height = math.ceil(self.document.height + 2 * VSTEP)
+        maxscroll = height - self.tab_height
+        return max(0, min(scroll, maxscroll))
 
     def set_needs_render(self):
         self.needs_render = True
@@ -1744,11 +1750,6 @@ class Tab:
         max_y = max(self.document.height + 2 * VSTEP - self.tab_height, 0)
         self.scroll = min(self.scroll + SCROLL_STEP, max_y)
 
-    def clamp_scroll(self, scroll):
-        height = math.ceil(self.document.height + 2 * VSTEP)
-        maxscroll = height - self.tab_height
-        return max(0, min(scroll, maxscroll))
-
     def allowed_request(self, url):
         return self.allowed_origins == None or url.origin() in self.allowed_origins
 
@@ -1776,6 +1777,7 @@ class Tab:
         headers, body = url.request(self.url, payload)
         self.scroll = 0
         self.scroll_changed_in_tab = True
+        self.task_runner.clear_pending_tasks()
         self.history.append(url)
         self.url = url
         self.nodes = HTMLParser(body).parse()
@@ -1835,6 +1837,7 @@ class Tab:
         style(self.nodes, sorted(self.rules, key=cascade_priority))
         self.document = DocumentLayout(self.nodes)
         self.document.layout()
+
         clamped_scroll = self.clamp_scroll(self.scroll)
         if clamped_scroll != self.scroll:
             self.scroll_changed_in_tab = True
@@ -1883,8 +1886,8 @@ class MeasureTime:
 
     def time(self, name):
         self.lock.acquire(blocking=True)
-        tid = threading.get_ident()
         ts = time.time() * 1000000
+        tid = threading.get_ident()
         self.file.write(
             ', { "ph": "B", "cat": "_",'
             + '"name": "'
@@ -1902,8 +1905,8 @@ class MeasureTime:
 
     def stop(self, name):
         self.lock.acquire(blocking=True)
-        tid = threading.get_ident()
         ts = time.time() * 1000000
+        tid = threading.get_ident()
         self.file.write(
             ', { "ph": "E", "cat": "_",'
             + '"name": "'
@@ -1942,5 +1945,4 @@ if __name__ == "__main__":
     sdl2.SDL_Init(sdl2.SDL_INIT_EVENTS)
     browser = Browser()
     browser.new_tab(URL(sys.argv[1]))
-    mainloop(browser)
     mainloop(browser)
