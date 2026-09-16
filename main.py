@@ -1154,9 +1154,13 @@ class Chrome:
     def click(self, x, y):
         self.focus = None
         if self.newtab_rect.contains(x, y):
-            self.browser.new_tab_internal(URL("https://browser.engineering/"))
+            task = Task(
+                self.browser.new_tab_internal, URL("https://browser.engineering/")
+            )
+            self.browser.active_tab.task_runner.schedule_task(task)
         elif self.back_rect.contains(x, y):
-            self.browser.active_tab.go_back()
+            task = Task(self.browser.active_tab.go_back)
+            self.browser.active_tab.task_runner.schedule_task(task)
         elif self.address_rect.contains(x, y):
             self.focus = "address bar"
             self.address_bar = ""
@@ -1709,6 +1713,7 @@ class Tab:
         self.load(url, body)
 
     def click(self, x, y):
+        self.render()
         self.focus = None
         y += self.scroll
         objs = [
