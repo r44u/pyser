@@ -73,6 +73,10 @@ def do_request(session, method, url, headers, body):
     elif method == "GET" and url == "/eventloop.js":
         with open("eventloop.js") as f:
             return "200 OK", f.read()
+    elif method == "GET" and url == "/animate":
+        return "200 OK", show_animate()
+    elif method == "GET" and url == "/animate.js":
+        return "200 OK", show_animate_js()
     elif method == "POST" and url == "/":
         params = form_decode(body)
         return do_login(session, params)
@@ -200,6 +204,33 @@ def show_count():
     out += "<div>Output</div>"
     out += "<script src=/eventloop.js></script>"
     return out
+
+
+def show_animate():
+    return """
+    <div>This text fades</div>
+    <script src=/animate.js></script>
+    """
+
+
+def show_animate_js():
+    return """
+var div = document.querySelectorAll("div")[0];
+var total_frames = 120;
+var current_frame = 0;
+var change_per_frame = (0.999 - 0.1) / total_frames;
+function animate() {
+    current_frame++;
+    var new_opacity = current_frame * change_per_frame + 0.1;
+    div.style = "opacity:" + new_opacity;
+    return current_frame < total_frames;
+}
+function run_animation_frame() {
+    if (animate())
+        requestAnimationFrame(run_animation_frame);
+}
+requestAnimationFrame(run_animation_frame);
+    """
 
 
 s = socket.socket(

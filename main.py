@@ -8,6 +8,7 @@ import skia
 import math
 import threading
 import time
+import OpenGL.GL
 
 
 WIDTH, HEIGHT = 800, 600
@@ -82,6 +83,7 @@ class JSContext:
         self.interp.export_function("innerHTML_set", self.innerHTML_set)
         self.interp.export_function("XMLHttpRequest_send", self.XMLHttpRequest_send)
         self.interp.export_function("requestAnimationFrame", self.requestAnimationFrame)
+        self.interp.export_function("style_set", self.style_set)
         self.node_to_handle = {}
         self.handle_to_node = {}
         self.interp.export_function("setTimeout", self.setTimeout)
@@ -163,6 +165,11 @@ class JSContext:
 
     def requestAnimationFrame(self):
         self.tab.browser.set_needs_animation_frame(self.tab)
+
+    def style_set(self, handle, s):
+        elt = self.handle_to_node[handle]
+        elt.attributes["style"] = s
+        self.tab.set_needs_render()
 
     def run(self, script, code):
         try:
@@ -1435,13 +1442,27 @@ class Browser:
             sdl2.SDL_WINDOWPOS_CENTERED,
             WIDTH,
             HEIGHT,
-            sdl2.SDL_WINDOW_SHOWN,
+            sdl2.SDL_WINDOW_SHOWN | sdl2.SDL_WINDOW_OPENGL,
         )
-        self.root_surface = skia.Surface.MakeRaster(
-            skia.ImageInfo.Make(
-                WIDTH, HEIGHT, ct=skia.kRGBA_8888_ColorType, at=skia.kUnpremul_AlphaType
+        self.gl_context = sdl2.SDL_GL_CreateContext(self.sdl_window)
+        print(
+            ("OpenGL initialized: vendor={}," + "renderer={}").format(
+                OpenGL.GL.glGetString(OpenGL.GL.GL_VENDOR),
+                OpenGL.GL.glGetString(OpenGL.GL.GL_RENDERER),
             )
         )
+        self.skia_context = skia.GrDirectContext.MakeGL()
+        self.root_surface = skia.Surface.MakeFromBackendRenderTarget(
+            self.skia_context,
+            skia.GrBackendRenderTarget(
+                WIDTH, HEIGHT, 0, 0, skia.GrGLFramebufferInfo(0, OpenGL.GL.GL_RGBA8)
+            ),
+            skia.kBottomLeft_GrSurfaceOrigin,
+            skia.kRGBA_8888_ColorType,
+            skia.ColorSpace.MakeSRGB(),
+        )
+        assert self.root_surface is not None
+
         self.chrome = Chrome(self)
         if sdl2.SDL_BYTEORDER == sdl2.SDL_BIG_ENDIAN:
             self.RED_MASK = 0xFF000000
@@ -1455,7 +1476,12 @@ class Browser:
             self.ALPHA_MASK = 0xFF000000
         sdl2.SDL_StartTextInput()
 
-        self.chrome_surface = skia.Surface(WIDTH, math.ceil(self.chrome.bottom))
+        self.chrome_surface = skia.Surface.MakeRenderTarget(
+            self.skia_context,
+            skia.Budgeted.kNo,
+            skia.ImageInfo.MakeN32Premul(WIDTH, math.ceil(self.chrome.bottom)),
+        )
+        assert self.chrome_surface is not None
         self.tab_surface = None
         self.needs_animation_frame = True
         self.needs_raster_and_draw = False
@@ -1478,6 +1504,7 @@ class Browser:
         self.measure.finish()
         for tab in self.tabs:
             tab.task_runner.set_needs_quit()
+        sdl2.SDL_GL_DeleteContext(self.gl_context)
         sdl2.SDL_DestroyWindow(self.sdl_window)
 
     def clamp_scroll(self, scroll):
@@ -1576,7 +1603,12 @@ class Browser:
             return
         tab_height = math.ceil(self.active_tab_height + 2 * VSTEP)
         if not self.tab_surface or tab_height != self.tab_surface.height():
-            self.tab_surface = skia.Surface(WIDTH, tab_height)
+            self.tab_surface = skia.Surface.MakeRenderTarget(
+                self.skia_context,
+                skia.Budgeted.kNo,
+                skia.ImageInfo.MakeN32Premul(WIDTH, tab_height),
+            )
+        assert self.chrome_surface is not None
         canvas = self.tab_surface.getCanvas()
         canvas.clear(skia.ColorWHITE)
         if self.active_tab_display_list:
@@ -1606,26 +1638,8 @@ class Browser:
         self.chrome_surface.draw(canvas, 0, 0)
         canvas.restore()
 
-        skia_image = self.root_surface.makeImageSnapshot()
-        skia_bytes = skia_image.tobytes()
-        depth = 32  # ピクセルごとのビット数（4バイト） Bits per pixel
-        pitch = 4 * WIDTH  # 行ごとのバイト数Bytes per row
-        sdl_surface = sdl2.SDL_CreateRGBSurfaceFrom(
-            skia_bytes,
-            WIDTH,
-            HEIGHT,
-            depth,
-            pitch,
-            self.RED_MASK,
-            self.GREEN_MASK,
-            self.BLUE_MASK,
-            self.ALPHA_MASK,
-        )
-        rect = sdl2.SDL_Rect(0, 0, WIDTH, HEIGHT)
-        window_surface = sdl2.SDL_GetWindowSurface(self.sdl_window)
-        # 実際にコピーを行っているのはSDL_BlitSurfaceです
-        sdl2.SDL_BlitSurface(sdl_surface, rect, window_surface, rect)
-        sdl2.SDL_UpdateWindowSurface(self.sdl_window)
+        self.root_surface.flushAndSubmit()
+        sdl2.SDL_GL_SwapWindow(self.sdl_window)
 
     def schedule_load(self, url, body=None):
         self.active_tab.task_runner.clear_pending_tasks()
