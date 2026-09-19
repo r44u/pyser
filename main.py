@@ -191,6 +191,7 @@ class DrawText:
         self.bottom = y1 + linespace(font)
         self.rect = skia.Rect.MakeLTRB(x1, y1, self.right, self.bottom)
         self.color = color
+        self.children = []
 
     def execute(self, canvas):
         paint = skia.Paint(
@@ -207,6 +208,16 @@ class DrawRect:
     def __init__(self, rect, color):
         self.color = color
         self.rect = rect
+        self.top = rect.top()
+        self.left = rect.left()
+        self.bottom = rect.bottom()
+        self.right = rect.right()
+        self.children = []
+
+    def __repr__(self):
+        return ("DrawRect(top={} left={} " + "bottom={} right={} color={})").format(
+            self.top, self.left, self.bottom, self.right, self.color
+        )
 
     def execute(self, canvas):
         paint = skia.Paint(
@@ -220,6 +231,7 @@ class DrawRRect:
         self.rect = rect
         self.rrect = skia.RRect.MakeRectXY(rect, radius, radius)
         self.color = color
+        self.children = []
 
     def execute(self, canvas):
         sk_color = parse_color(self.color)
@@ -268,6 +280,16 @@ class Blend:
         self.rect = skia.Rect.MakeEmpty()
         for cmd in self.children:
             self.rect.join(cmd.rect)
+
+    def __repr__(self):
+        args = ""
+        if self.opacity < 1:
+            args += ", opacity={}".format(self.opacity)
+        if self.blend_mode:
+            args += ", blend_mode={}".format(self.blend_mode)
+        if not args:
+            args = ", <no-op>"
+        return "Blend({})".format(args[2:])
 
     def execute(self, canvas):
         paint = skia.Paint(
@@ -1108,6 +1130,7 @@ class DrawLine:
         self.rect = skia.Rect.MakeLTRB(x1, y1, x2, y2)
         self.color = color
         self.thickness = thickness
+        self.children = []
 
     def execute(self, canvas):
         path = (
@@ -1866,6 +1889,8 @@ class Tab:
         paint_tree(self.document, self.display_list)
         self.needs_render = False
         self.browser.measure.stop("render")
+        for item in self.display_list:
+            print_tree(item)
 
     def raster(self, canvas):
         for cmd in self.display_list:
