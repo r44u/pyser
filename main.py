@@ -550,6 +550,8 @@ class Text:
         self.text = text
         self.children = []
         self.parent = parent
+        self.style = {}
+        self.animations = {}
 
     def __repr__(self):
         return repr(self.text)
@@ -562,9 +564,29 @@ class Element:
         self.children = []
         self.parent = parent
         self.is_focused = False
+        self.style = {}
+        self.animations = {}
 
     def __repr__(self):
         return "<" + self.tag + ">"
+
+
+class NumericAnimation:
+    def __init__(self, old_value, new_value, num_frames):
+        self.old_value = float(old_value)
+        self.new_value = float(new_value)
+        self.num_frames = num_frames
+
+        self.frame_count = 1
+        total_change = self.new_value - self.old_value
+        self.change_per_frame = total_change / num_frames
+
+    def animate(self):
+        self.frame_count += 1
+        if self.frame_count >= self.num_frames:
+            return
+        current_value = self.old_value + self.change_per_frame * self.frame_count
+        return str(current_value)
 
 
 def print_tree(node, indent=0):
@@ -777,19 +799,19 @@ class CSSParser:
             raise Exception("Parsing error")
         self.i += 1
 
-    def pair(self):
+    def pair(self, until):
         prop = self.word()  # プロパティ
         self.whitespace()  # 空白
         self.literal(":")  # コロン
         self.whitespace()  # 空白
-        val = self.word()  # 値
-        return prop.casefold(), val
+        val = self.until_chars(until)  # 値
+        return prop.casefold(), val.strip()
 
     def body(self):
         pairs = {}
-        while self.i < len(self.s):
+        while self.i < len(self.s) and self.s[self.i] != "}":
             try:
-                prop, val = self.pair()  # プロパティと値のペア
+                prop, val = self.pair([";", "}"])  # プロパティと値のペア
                 pairs[prop.casefold()] = val
                 self.whitespace()  # 空白
                 self.literal(";")  # 区切りのセミコロン
@@ -821,6 +843,12 @@ class CSSParser:
             self.whitespace()
         return out
 
+    def until_chars(self, chars):
+        start = self.i
+        while self.i < len(self.s) and self.s[self.i] not in chars:
+            self.i += 1
+        return self.s[start : self.i]
+
     def parse(self):
         rules = []
         while self.i < len(self.s):
@@ -842,7 +870,8 @@ class CSSParser:
         return rules
 
 
-def style(node, rules):
+def style(node, rules, tab):
+    old_style = node.style
     node.style = {}
     for property, default_value in INHERITED_PROPERTIES.items():
         if node.parent:
@@ -867,8 +896,43 @@ def style(node, rules):
         node_pct = float(node.style["font-size"][:-1]) / 100
         parent_px = float(parent_font_size[:-2])
         node.style["font-size"] = str(node_pct * parent_px) + "px"
+    if old_style:
+        transitions = diff_styles(old_style, node.style)
+        for property, (old_value, new_value, num_frames) in transitions.items():
+            if property == "opacity":
+                tab.set_needs_render()
+                animation = NumericAnimation(old_value, new_value, num_frames)
+                node.animations[property] = animation
+                node.style[property] = animation.animate()
     for child in node.children:
-        style(child, rules)
+        style(child, rules, tab)
+
+
+def parse_transition(value):
+    properties = {}
+    if not value:
+        return properties
+    for item in value.split(","):
+        property, duration = item.split(" ", 1)
+        frames = int(float(duration[:-1]) / REFRESH_RATE_SEC)
+        properties[property] = frames
+    return properties
+
+
+def diff_styles(old_style, new_style):
+    transitions = {}
+    for property, num_frames in parse_transition(new_style.get("transition")).items():
+        if property not in old_style:
+            continue
+        if property not in new_style:
+            continue
+        old_value = old_style[property]
+        new_value = new_style[property]
+        if old_value == new_value:
+            continue
+        transitions[property] = (old_value, new_value, num_frames)
+
+    return transitions
 
 
 class DocumentLayout:
