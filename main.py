@@ -545,6 +545,24 @@ class URL:
             return URL(self.scheme + "://" + self.host + ":" + str(self.port) + url)
 
 
+class NumericAnimation:
+    def __init__(self, old_value, new_value, num_frames):
+        self.old_value = float(old_value)
+        self.new_value = float(new_value)
+        self.num_frames = num_frames
+
+        self.frame_count = 1
+        total_change = self.new_value - self.old_value
+        self.change_per_frame = total_change / num_frames
+
+    def animate(self):
+        self.frame_count += 1
+        if self.frame_count >= self.num_frames:
+            return
+        current_value = self.old_value + self.change_per_frame * self.frame_count
+        return str(current_value)
+
+
 class Text:
     def __init__(self, text, parent):
         self.text = text
@@ -569,24 +587,6 @@ class Element:
 
     def __repr__(self):
         return "<" + self.tag + ">"
-
-
-class NumericAnimation:
-    def __init__(self, old_value, new_value, num_frames):
-        self.old_value = float(old_value)
-        self.new_value = float(new_value)
-        self.num_frames = num_frames
-
-        self.frame_count = 1
-        total_change = self.new_value - self.old_value
-        self.change_per_frame = total_change / num_frames
-
-    def animate(self):
-        self.frame_count += 1
-        if self.frame_count >= self.num_frames:
-            return
-        current_value = self.old_value + self.change_per_frame * self.frame_count
-        return str(current_value)
 
 
 def print_tree(node, indent=0):
@@ -805,13 +805,13 @@ class CSSParser:
         self.literal(":")  # コロン
         self.whitespace()  # 空白
         val = self.until_chars(until)  # 値
-        return prop.casefold(), val.strip()
+        return prop.casefold(), val
 
     def body(self):
         pairs = {}
         while self.i < len(self.s) and self.s[self.i] != "}":
             try:
-                prop, val = self.pair([";", "}"])  # プロパティと値のペア
+                prop, val = self.pair([";", "}"])
                 pairs[prop.casefold()] = val
                 self.whitespace()  # 空白
                 self.literal(";")  # 区切りのセミコロン
@@ -833,6 +833,12 @@ class CSSParser:
                 self.i += 1
         return None
 
+    def until_chars(self, chars):
+        start = self.i
+        while self.i < len(self.s) and self.s[self.i] not in chars:
+            self.i += 1
+        return self.s[start : self.i]
+
     def selector(self):
         out = TagSelector(self.word().casefold())
         self.whitespace()
@@ -842,12 +848,6 @@ class CSSParser:
             out = DescendantSelector(out, descendant)
             self.whitespace()
         return out
-
-    def until_chars(self, chars):
-        start = self.i
-        while self.i < len(self.s) and self.s[self.i] not in chars:
-            self.i += 1
-        return self.s[start : self.i]
 
     def parse(self):
         rules = []
@@ -871,8 +871,8 @@ class CSSParser:
 
 
 def style(node, rules, tab):
-    old_style = node.style
     node.style = {}
+    old_style = node.style
     for property, default_value in INHERITED_PROPERTIES.items():
         if node.parent:
             node.style[property] = node.parent.style[property]
@@ -896,6 +896,8 @@ def style(node, rules, tab):
         node_pct = float(node.style["font-size"][:-1]) / 100
         parent_px = float(parent_font_size[:-2])
         node.style["font-size"] = str(node_pct * parent_px) + "px"
+    for child in node.children:
+        style(child, rules, tab)
     if old_style:
         transitions = diff_styles(old_style, node.style)
         for property, (old_value, new_value, num_frames) in transitions.items():
@@ -904,8 +906,6 @@ def style(node, rules, tab):
                 animation = NumericAnimation(old_value, new_value, num_frames)
                 node.animations[property] = animation
                 node.style[property] = animation.animate()
-    for child in node.children:
-        style(child, rules, tab)
 
 
 def parse_transition(value):
@@ -1886,6 +1886,9 @@ class Tab:
         self.task_runner.start_thread()
         self.js = None
         self.needs_render = False
+        self.needs_style = False
+        self.needs_layout = False
+        self.needs_paint = False
         self.browser = browser
         self.scroll_changed_in_tab = False
 
@@ -1894,8 +1897,14 @@ class Tab:
         maxscroll = height - self.tab_height
         return max(0, min(scroll, maxscroll))
 
+    def set_needs_layout(self):
+        self.needs_render = True
+        self.needs_layout = True
+        self.browser.set_needs_animation_frame(self)
+
     def set_needs_render(self):
         self.needs_render = True
+        self.needs_style = True
         self.browser.set_needs_animation_frame(self)
 
     def keypress(self, char):
@@ -1977,6 +1986,13 @@ class Tab:
             self.scroll = scroll
         self.browser.measure.time("script-runRAFHandlers")
         self.js.interp.evaljs("__runRAFHandlers()")
+
+        for node in tree_to_list(self.nodes, []):
+            for property_name, animation in node.animations.items():
+                value = animation.animate()
+                if value:
+                    node.style[property_name] = value
+                    self.set_needs_layout()
         self.browser.measure.stop("script-runRAFHandlers")
         self.render()
 
@@ -2046,26 +2062,36 @@ class Tab:
             except:
                 continue
             self.rules.extend(CSSParser(body).parse())
-        style(self.nodes, sorted(self.rules, key=cascade_priority))
+        style(self.nodes, sorted(self.rules, key=cascade_priority), self)
         self.set_needs_render()
 
     def render(self):
         if not self.needs_render:
             return
         self.browser.measure.time("render")
-        style(self.nodes, sorted(self.rules, key=cascade_priority))
-        self.document = DocumentLayout(self.nodes)
-        self.document.layout()
+        if self.needs_style:
+            style(self.nodes, sorted(self.rules, key=cascade_priority), self)
+            self.needs_layout = True
+            self.needs_style = False
+
+        if self.needs_layout:
+            self.document = DocumentLayout(self.nodes)
+            self.document.layout()
+            self.needs_paint = True
+            self.needs_layout = False
 
         clamped_scroll = self.clamp_scroll(self.scroll)
         if clamped_scroll != self.scroll:
             self.scroll_changed_in_tab = True
         self.scroll = clamped_scroll
 
-        self.display_list = []
-        paint_tree(self.document, self.display_list)
-        self.needs_render = False
+        if self.needs_paint:
+            self.display_list = []
+            paint_tree(self.document, self.display_list)
+            self.needs_render = False
+            self.needs_paint = False
         self.browser.measure.stop("render")
+
         for item in self.display_list:
             print_tree(item)
 
