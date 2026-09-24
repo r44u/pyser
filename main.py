@@ -245,6 +245,7 @@ class DrawCompositedLayer(PaintCommand):
 class VisualEffect:
     def __init__(self, rect, children, node=None):
         self.rect = rect.makeOffset(0.0, 0.0)
+        self.node = node
         self.children = children
         for child in self.children:
             self.rect.join(child.rect)
@@ -326,7 +327,9 @@ def paint_visual_effects(node, cmds, rect):
                 1.0, "destination-in", node, [DrawRRect(rect, border_radius, "white")]
             )
         )
-    return [Blend(opacity, blend_mode, node, cmds)]
+    blend_op = Blend(opacity, blend_mode, node, cmds)
+    node.blend_op = blend_op
+    return [blend_op]
 
 
 class Opacity:
@@ -1623,6 +1626,14 @@ class Browser:
             HEIGHT,
             sdl2.SDL_WINDOW_SHOWN | sdl2.SDL_WINDOW_OPENGL,
         )
+
+        sdl2.SDL_GL_SetAttribute(sdl2.SDL_GL_CONTEXT_MAJOR_VERSION, 3)
+        sdl2.SDL_GL_SetAttribute(sdl2.SDL_GL_CONTEXT_MINOR_VERSION, 2)
+        sdl2.SDL_GL_SetAttribute(sdl2.SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG, True)
+        sdl2.SDL_GL_SetAttribute(
+            sdl2.SDL_GL_CONTEXT_PROFILE_MASK, sdl2.SDL_GL_CONTEXT_PROFILE_CORE
+        )
+
         self.gl_context = sdl2.SDL_GL_CreateContext(self.sdl_window)
         print(
             ("OpenGL initialized: vendor={}," + "renderer={}").format(
@@ -1664,7 +1675,23 @@ class Browser:
         self.tab_surface = None
         self.needs_animation_frame = True
         self.needs_raster_and_draw = False
+        self.needs_composite = False
+        self.needs_raster = False
+        self.needs_draw = False
         threading.current_thread().name = "Browser thread"
+        self.composited_updates = {}
+
+    def set_needs_raster(self):
+        self.needs_raster = True
+        self.needs_draw = True
+
+    def set_needs_draw(self):
+        self.needs_draw = True
+
+    def set_needs_composite(self):
+        self.needs_composite = True
+        self.needs_raster = True
+        self.needs_draw = True
 
     def commit(self, tab, data):
         self.lock.acquire(blocking=True)
@@ -1676,12 +1703,26 @@ class Browser:
             if data.display_list is not None:
                 self.active_tab_display_list = data.display_list
             self.animation_timer = None
-            self.set_needs_raster_and_draw()
+            self.set_needs_raster()
+            self.composited_updates = data.composited_updates
+            if self.composited_updates == None:
+                self.composited_updates = {}
+                self.set_needs_composite()
+            else:
+                self.set_needs_draw()
         self.lock.release()
 
+    def get_latest(self, effect):
+        node = effect.node
+        if node not in self.composited_updates:
+            return effect
+        if not isinstance(effect, Blend):
+            return effect
+        return self.composited_updates[node]
+
     def composite(self):
-        add_parent_pointers(self.active_tab_display_list)
         self.composited_layers = []
+        add_parent_pointers(self.active_tab_display_list)
         all_commands = []
         for cmd in self.active_tab_display_list:
             all_commands = tree_to_list(cmd, all_commands)
@@ -1708,7 +1749,7 @@ class Browser:
             self.lock.release()
             return
         self.active_tab_scroll = self.clamp_scroll(self.active_tab_scroll + SCROLL_STEP)
-        self.set_needs_raster_and_draw()
+        self.set_needs_raster()
         self.needs_animation_frame = True
         self.lock.release()
 
@@ -1717,7 +1758,7 @@ class Browser:
         if e.y < self.chrome.bottom:
             self.focus = None
             self.chrome.click(e.x, e.y)
-            self.set_needs_raster_and_draw()
+            self.set_needs_raster()
         else:
             self.focus = "content"
             self.chrome.blur()
@@ -1743,7 +1784,7 @@ class Browser:
             self.lock.release()
             return
         if self.chrome.keypress(char):
-            self.set_needs_raster_and_draw()
+            self.set_needs_raster()
         elif self.focus == "content":
             task = Task(self.active_tab.keypress, char)
             self.active_tab.task_runner.schedule_task(task)
@@ -1752,7 +1793,7 @@ class Browser:
     def handle_enter(self):
         self.lock.acquire(blocking=True)
         if self.chrome.enter():
-            self.set_needs_raster_and_draw()
+            self.set_needs_raster()
         self.lock.release()
 
     def paint_draw_list(self):
@@ -1764,16 +1805,22 @@ class Browser:
                 continue
             parent = composited_layer.display_items[0].parent
             while parent:
-                if parent in new_effects:
-                    new_parent = new_effects[parent]
-                    new_parent.children.append(current_effect)
+                new_parent = self.get_latest(parent)
+                if new_parent in new_effects:
+                    new_effects[new_parent].children.append(current_effect)
                     break
                 else:
-                    current_effect = parent.clone(current_effect)
-                    new_effects[parent] = current_effect
+                    current_effect = new_parent.clone(current_effect)
+                    new_effects[new_parent] = current_effect
                     parent = parent.parent
             if not parent:
                 self.draw_list.append(current_effect)
+
+    def clear_data(self):
+        self.active_tab_scroll = 0
+        self.active_tab_url = None
+        self.display_list = []
+        self.composited_updates = {}
 
     def schedule_animation_frame(self):
         def callback():
@@ -1797,16 +1844,23 @@ class Browser:
 
     def composite_raster_and_draw(self):
         self.lock.acquire(blocking=True)
-        if not self.needs_raster_and_draw:
+        if not self.needs_composite and not self.needs_raster and not self.needs_draw:
             self.lock.release()
             return
-        self.measure.time("raster/draw")
-        self.composite()
-        self.raster_chrome()
-        self.raster_tab()
-        self.paint_draw_list()
-        self.draw()
-        self.measure.stop("raster/draw")
+        if self.needs_composite:
+            self.measure.time("composite")
+            self.composite()
+            self.measure.stop("composite")
+        if self.needs_raster:
+            self.measure.time("raster")
+            self.raster_chrome()
+            self.raster_tab()
+            self.measure.stop("raster")
+        if self.needs_draw:
+            self.measure.time("draw")
+            self.paint_draw_list()
+            self.draw()
+            self.measure.stop("draw")
         self.needs_raster_and_draw = False
         self.lock.release()
 
@@ -1852,6 +1906,8 @@ class Browser:
         self.active_tab_url = None
         self.needs_animation_frame = True
         self.animation_timer = None
+        self.clear_data()
+        self.composited_layers = []
 
     def new_tab_internal(self, url):
         new_tab = Tab(self, HEIGHT - self.chrome.bottom)
@@ -1891,6 +1947,7 @@ class Tab:
         self.needs_paint = False
         self.browser = browser
         self.scroll_changed_in_tab = False
+        self.composited_updates = []
 
     def clamp_scroll(self, scroll):
         height = math.ceil(self.document.height + 2 * VSTEP)
@@ -1905,6 +1962,10 @@ class Tab:
     def set_needs_render(self):
         self.needs_render = True
         self.needs_style = True
+        self.browser.set_needs_animation_frame(self)
+
+    def set_needs_paint(self):
+        self.needs_paint = True
         self.browser.set_needs_animation_frame(self)
 
     def keypress(self, char):
@@ -1982,26 +2043,31 @@ class Tab:
         return self.allowed_origins == None or url.origin() in self.allowed_origins
 
     def run_animation_frame(self, scroll):
-        if not self.scroll_changed_in_tab:
-            self.scroll = scroll
-        self.browser.measure.time("script-runRAFHandlers")
-        self.js.interp.evaljs("__runRAFHandlers()")
-
         for node in tree_to_list(self.nodes, []):
             for property_name, animation in node.animations.items():
                 value = animation.animate()
                 if value:
                     node.style[property_name] = value
-                    self.set_needs_layout()
-        self.browser.measure.stop("script-runRAFHandlers")
+                    self.composited_updates.append(node)
+                    self.set_needs_paint()
+
+        needs_composite = self.needs_style or self.needs_layout
+
         self.render()
 
+        composited_updates = None
+        if not needs_composite:
+            composited_updates = {}
+            for node in self.composited_updates:
+                composited_updates[node] = node.blend_op
         document_height = math.ceil(self.document.height + 2 * VSTEP)
-        scroll = None
-        if self.scroll_changed_in_tab:
-            scroll = self.scroll
+        self.composited_updates = []
         commit_data = CommitData(
-            self.url, self.scroll, document_height, self.display_list
+            self.url,
+            self.scroll if self.scroll_changed_in_tab else None,
+            document_height,
+            self.display_list,
+            composited_updates,
         )
         self.display_list = None
         self.browser.commit(self, commit_data)
@@ -2107,11 +2173,12 @@ class Tab:
 
 
 class CommitData:
-    def __init__(self, url, scroll, height, display_list):
+    def __init__(self, url, scroll, height, display_list, composited_updates):
         self.url = url
         self.scroll = scroll
         self.height = height
         self.display_list = display_list
+        self.composited_updates = composited_updates
 
 
 class MeasureTime:
