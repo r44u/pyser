@@ -221,6 +221,12 @@ class CompositedLayer:
             item.execute(canvas)
         canvas.restore()
 
+    def add(self, display_item):
+        self.display_items.append(display_item)
+
+    def can_merge(self, display_item):
+        return display_item.parent == self.display_items[0].parent
+
 
 def add_parent_pointers(nodes, parent=None):
     for node in nodes:
@@ -247,6 +253,7 @@ class VisualEffect:
         self.rect = rect.makeOffset(0.0, 0.0)
         self.node = node
         self.children = children
+        self.needs_compositing = False
         for child in self.children:
             self.rect.join(child.rect)
 
@@ -1728,8 +1735,13 @@ class Browser:
             all_commands = tree_to_list(cmd, all_commands)
         paint_commands = [cmd for cmd in all_commands if isinstance(cmd, PaintCommand)]
         for cmd in paint_commands:
-            layer = CompositedLayer(self.skia_context, cmd)
-            self.composited_layers.append(layer)
+            for layer in reversed(self.composited_layers):
+                if layer.can_merge(cmd):
+                    layer.add(cmd)
+                    break
+            else:
+                layer = CompositedLayer(self.skia_context, cmd)
+                self.composited_layers.append(layer)
 
     def handle_quit(self):
         self.measure.finish()
