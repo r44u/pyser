@@ -193,12 +193,19 @@ class CompositedLayer:
         self.skia_context = skia_context
         self.surface = None
         self.display_items = [display_item]
+        self.parent = display_item.parent
 
     def composited_bounds(self):
         rect = skia.Rect.MakeEmpty()
         for item in self.display_items:
-            rect.join(item.rect)
+            rect.join(absolute_to_local(item, local_to_absolute(item, item.rect)))
         rect.outset(1, 1)
+        return rect
+
+    def absolute_bounds(self):
+        rect = skia.Rect.MakeEmpty()
+        for item in self.display_items:
+            rect.join(local_to_absolute(item, item.rect))
         return rect
 
     def add(self, display_item):
@@ -338,6 +345,7 @@ class DrawRRect(PaintCommand):
 
 
 def paint_visual_effects(node, cmds, rect):
+    translation = parse_transform(node.style.get("transform", ""))
     opacity = float(node.style.get("opacity", "1.0"))
     blend_mode = node.style.get("mix-blend-mode")
     if node.style.get("overflow", "visible") == "clip":
@@ -351,7 +359,7 @@ def paint_visual_effects(node, cmds, rect):
         )
     blend_op = Blend(opacity, blend_mode, node, cmds)
     node.blend_op = blend_op
-    return [blend_op]
+    return [Transform(translation, rect, node, [blend_op])]
 
 
 class Opacity:
@@ -372,6 +380,78 @@ class Opacity:
             cmd.execute(canvas)
         if self.opacity < 1:
             canvas.restore()
+
+
+class Transform(VisualEffect):
+    def __init__(self, translation, rect, node, children):
+        super().__init__(rect, children, node)
+        self.self_rect = rect
+        self.translation = translation
+
+    def execute(self, canvas):
+        if self.translation:
+            (x, y) = self.translation
+            canvas.save()
+            canvas.translate(x, y)
+        for cmd in self.children:
+            cmd.execute(canvas)
+        if self.translation:
+            canvas.restore()
+
+    def clone(self, child):
+        return Transform(self.translation, self.self_rect, self.node, [child])
+
+    def __repr__(self):
+        if self.translation:
+            (x, y) = self.translation
+            return "Transform(translate({}, {}))".format(x, y)
+        else:
+            return "Transform(<no-op>)"
+
+    def map(self, rect):
+        return map_translation(rect, self.translation)
+
+    def unmap(self, rect):
+        return map_translation(rect, self.translation, True)
+
+
+def map_translation(rect, translation, reversed=False):
+    if not translation:
+        return rect
+    else:
+        (x, y) = translation
+        matrix = skia.Matrix()
+        if reversed:
+            matrix.setTranslate(-x, -y)
+        else:
+            matrix.setTranslate(x, y)
+        return matrix.mapRect(rect)
+
+
+def absolute_bounds_for_obj(obj):
+    rect = skia.Rect.MakeXYWH(obj.x, obj.y, obj.width, obj.height)
+    cur = obj.node
+    while cur:
+        rect = map_translation(rect, parse_transform(cur.style.get("transform", "")))
+        cur = cur.parent
+    return rect
+
+
+def local_to_absolute(display_item, rect):
+    while display_item.parent:
+        rect = display_item.parent.map(rect)
+        display_item = display_item.parent
+    return rect
+
+
+def absolute_to_local(display_item, rect):
+    parent_chain = []
+    while display_item.parent:
+        parent_chain.append(display_item.parent)
+        display_item = display_item.parent
+    for parent in reversed(parent_chain):
+        rect = parent.unmap(rect)
+    return rect
 
 
 class Blend(VisualEffect):
@@ -412,6 +492,21 @@ class Blend(VisualEffect):
             cmd.execute(canvas)
         if self.should_save:
             canvas.restore()
+
+    def map(self, rect):
+        if (
+            self.children
+            and isinstance(self.children[-1], Blend)
+            and self.children[-1].blend_mode == "destination-in"
+        ):
+            bounds = rect.makeOffset(0.0, 0.0)
+            bounds.intersect(self.children[-1].rect)
+            return bounds
+        else:
+            return rect
+
+    def unmap(self, rect):
+        return rect
 
 
 def getMetric(font, what):
@@ -944,6 +1039,15 @@ def parse_transition(value):
         frames = int(float(duration[:-1]) / REFRESH_RATE_SEC)
         properties[property] = frames
     return properties
+
+
+def parse_transform(transform_str):
+    if transform_str.find("translate(") < 0:
+        return None
+    left_paren = transform_str.find("(")
+    right_paren = transform_str.find(")")
+    (x_px, y_px) = transform_str[left_paren + 1 : right_paren].split(",")
+    return (float(x_px[:-2]), float(y_px[:-2]))
 
 
 def diff_styles(old_style, new_style):
@@ -1768,6 +1872,12 @@ class Browser:
                 if layer.can_merge(cmd):
                     layer.add(cmd)
                     break
+                elif skia.Rect.Intersects(
+                    layer.absolute_bounds(), local_to_absolute(cmd, cmd.rect)
+                ):
+                    layer = CompositedLayer(self.skia_context, cmd)
+                    self.composited_layers.append(layer)
+                    break
             else:
                 layer = CompositedLayer(self.skia_context, cmd)
                 self.composited_layers.append(layer)
@@ -2060,10 +2170,11 @@ class Tab:
         self.render()
         self.focus = None
         y += self.scroll
+        loc_rect = skia.Rect.MakeXYWH(x, y, 1, 1)
         objs = [
             obj
             for obj in tree_to_list(self.document, [])
-            if obj.x <= x < obj.x + obj.width and obj.y <= y < obj.y + obj.height
+            if absolute_bounds_for_obj(obj).intersects(loc_rect)
         ]
         if not objs:
             return
