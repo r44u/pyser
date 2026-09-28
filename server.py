@@ -34,6 +34,8 @@ def do_request(session, method, url, headers, body):
         return "200 OK", show_css_transition_css()
     elif method == "GET" and url == "/example13-opacity-transition.js":
         return "200 OK", show_css_transition_js()
+    elif method == "GET" and url == "/overlapping":
+        return "200 OK", show_overlapping_divs()
     elif method == "POST" and url == "/":
         params = form_decode(body)
         return do_login(session, params)
@@ -138,6 +140,16 @@ var buttons = document.querySelectorAll("button");
 buttons[0].addEventListener("click", start_fade_out);
 buttons[1].addEventListener("click", start_fade_in);
 """
+
+
+def show_overlapping_divs():
+    return """
+<div style="opacity:0.8">
+  <div></div>
+  <div style="overflow:clip;border-radius:30px;opacity:0.5;background-color:lightblue;transform:translate(50px,10px)">Underneath</div>
+  <div style="background-color:lightgreen;transform:translate(0px,0px)">On top</div>
+</div>
+    """
 
 
 def show_comments(session):
