@@ -36,6 +36,8 @@ def do_request(session, method, url, headers, body):
         return "200 OK", show_css_transition_js()
     elif method == "GET" and url == "/overlapping":
         return "200 OK", show_overlapping_divs()
+    elif method == "GET" and url == "/lorem":
+        return "200 OK", show_lorem()
     elif method == "POST" and url == "/":
         params = form_decode(body)
         return do_login(session, params)
@@ -150,6 +152,12 @@ def show_overlapping_divs():
   <div style="background-color:lightgreen;transform:translate(0px,0px)">On top</div>
 </div>
     """
+
+
+def show_lorem():
+    return """
+<div>Lorem ipsum dolor sit amet,consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.</div>
+"""
 
 
 def show_comments(session):

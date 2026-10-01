@@ -1072,12 +1072,13 @@ class DocumentLayout:
         self.parent = None
         self.children = []
 
-    def layout(self):
+    def layout(self, zoom):
+        self.zoom = zoom
         child = BlockLayout(self.node, self, None)
         self.children.append(child)
-        self.width = WIDTH - 2 * HSTEP
-        self.x = HSTEP
-        self.y = VSTEP
+        self.width = WIDTH - 2 * dpx(HSTEP, self.zoom)
+        self.x = dpx(HSTEP, self.zoom)
+        self.y = dpx(VSTEP, self.zoom)
         child.layout()
         self.height = child.height
 
@@ -1127,6 +1128,7 @@ class BlockLayout:
             return "block"
 
     def layout(self):
+        self.zoom = self.parent.zoom
         self.x = self.parent.x
         self.width = self.parent.width
         if self.previous:
@@ -1172,7 +1174,8 @@ class BlockLayout:
         style = node.style["font-style"]
         if style == "normal":
             style = "roman"
-        size = int(float(node.style["font-size"][:-2]) * 0.75)
+        px_size = float(node.style["font-size"][:-2])
+        size = dpx(px_size * 0.75, self.zoom)
         font = get_font(size, weight, style)
         w = font.measureText(word)  # 単語の幅を測定
         if self.cursor_x + w > self.width:
@@ -1190,7 +1193,7 @@ class BlockLayout:
         self.children.append(new_line)
 
     def input(self, node):
-        w = INPUT_WIDTH_PX
+        w = dpx(INPUT_WIDTH_PX, self.zoom)
         if self.cursor_x + w > self.width:
             self.new_line()
         line = self.children[-1]
@@ -1202,7 +1205,8 @@ class BlockLayout:
         style = node.style["font-style"]
         if style == "normal":
             style = "roman"
-        size = int(float(node.style["font-size"][:-2]) * 0.75)
+        px_size = float(node.style["font-size"][:-2])
+        size = dpx(px_size * 0.75, self.zoom)
         font = get_font(size, weight, style)
 
         self.cursor_x += w + font.measureText(" ")
@@ -1250,6 +1254,7 @@ class LineLayout:
         self.children = []
 
     def layout(self):
+        self.zoom = self.parent.zoom
         self.width = self.parent.width
         self.x = self.parent.x
         if self.previous:
@@ -1305,11 +1310,13 @@ class InputLayout:
         )
 
     def layout(self):
+        self.zoom = self.parent.zoom
         weight = self.node.style["font-weight"]
         style = self.node.style["font-style"]
         if style == "normal":
             style = "roman"
-        size = int(float(self.node.style["font-size"][:-2]) * 0.75)
+        px_size = float(self.node.style["font-size"][:-2])
+        size = dpx(px_size * 0.75, self.zoom)
         self.font = get_font(size, weight, style)
         self.width = INPUT_WIDTH_PX
         if self.previous:
@@ -1356,11 +1363,13 @@ class TextLayout:
         self.previous = previous
 
     def layout(self):
+        self.zoom = self.parent.zoom
         weight = self.node.style["font-weight"]
         style = self.node.style["font-style"]
         if style == "normal":
             style = "roman"
-        size = int(float(self.node.style["font-size"][:-2]) * 0.75)
+        px_size = float(self.node.style["font-size"][:-2])
+        size = dpx(px_size * 0.75, self.zoom)
         self.font = get_font(size, weight, style)
         self.width = self.font.measureText(self.word)
         if self.previous:
@@ -1601,8 +1610,9 @@ class Chrome:
 
 def mainloop(browser):
     event = sdl2.SDL_Event()
+    ctrl_down = False
     while True:
-        while sdl2.SDL_PollEvent(ctypes.byref(event)) != 0:
+        if sdl2.SDL_PollEvent(ctypes.byref(event)) != 0:
             if event.type == sdl2.SDL_QUIT:
                 browser.handle_quit()
                 sdl2.SDL_Quit()
@@ -1610,10 +1620,28 @@ def mainloop(browser):
             elif event.type == sdl2.SDL_MOUSEBUTTONUP:
                 browser.handle_click(event.button)
             elif event.type == sdl2.SDL_KEYDOWN:
+                if ctrl_down:
+                    if event.key.keysym.sym == sdl2.SDLK_EQUALS:
+                        browser.increment_zoom(True)
+                    elif event.key.keysym.sym == sdl2.SDLK_MINUS:
+                        browser.increment_zoom(False)
+                    elif event.key.keysym.sym == sdl2.SDLK_0:
+                        browser.reset_zoom()
                 if event.key.keysym.sym == sdl2.SDLK_RETURN:
                     browser.handle_enter()
                 elif event.key.keysym.sym == sdl2.SDLK_DOWN:
                     browser.handle_down()
+                elif (
+                    event.key.keysym.sym == sdl2.SDLK_RCTRL
+                    or event.key.keysym.sym == sdl2.SDLK_LCTRL
+                ):
+                    ctrl_down = True
+            elif event.type == sdl2.SDL_KEYUP:
+                if (
+                    event.key.keysym.sym == sdl2.SDLK_RCTRL
+                    or event.key.keysym.sym == sdl2.SDLK_LCTRL
+                ):
+                    ctrl_down = False
             elif event.type == sdl2.SDL_TEXTINPUT:
                 browser.handle_key(event.text.text.decode("utf8"))
         browser.composite_raster_and_draw()
@@ -2096,6 +2124,14 @@ class Browser:
             self.needs_animation_frame = True
         self.lock.release()
 
+    def increment_zoom(self, increment):
+        task = Task(self.active_tab.zoom_by, increment)
+        self.active_tab.task_runner.schedule_task(task)
+
+    def reset_zoom(self):
+        task = Task(self.active_tab.reset_zoom)
+        self.active_tab.task_runner.schedule_task(task)
+
 
 class Tab:
     def __init__(self, browser, tab_height):
@@ -2118,6 +2154,7 @@ class Tab:
         self.browser = browser
         self.scroll_changed_in_tab = False
         self.composited_updates = []
+        self.zoom = 1
 
     def clamp_scroll(self, scroll):
         height = math.ceil(self.document.height + 2 * VSTEP)
@@ -2246,6 +2283,7 @@ class Tab:
 
     # URLからWebページを読み込み、表示する関数
     def load(self, url, payload=None):
+        self.zoom = 1
         headers, body = url.request(self.url, payload)
         self.scroll = 0
         self.scroll_changed_in_tab = True
@@ -2313,7 +2351,7 @@ class Tab:
 
         if self.needs_layout:
             self.document = DocumentLayout(self.nodes)
-            self.document.layout()
+            self.document.layout(self.zoom)
             self.needs_paint = True
             self.needs_layout = False
 
@@ -2341,6 +2379,22 @@ class Tab:
             self.history.pop()
             back = self.history.pop()
             self.load(back)
+
+    def zoom_by(self, increment):
+        if increment:
+            self.zoom *= 1.1
+            self.scroll *= 1.1
+        else:
+            self.zoom *= 1 / 1.1
+            self.scroll *= 1 / 1.1
+        self.scroll_changed_in_tab = True
+        self.set_needs_render()
+
+    def reset_zoom(self):
+        self.scroll /= self.zoom
+        self.zoom = 1
+        self.scroll_changed_in_tab = True
+        self.set_needs_render()
 
 
 class CommitData:
@@ -2422,6 +2476,10 @@ class MeasureTime:
         self.file.write("]}")
         self.file.close()
         self.lock.release()
+
+
+def dpx(css_px, zoom):
+    return css_px * zoom
 
 
 if __name__ == "__main__":
