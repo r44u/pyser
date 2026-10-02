@@ -1066,6 +1066,10 @@ def diff_styles(old_style, new_style):
     return transitions
 
 
+def dpx(css_px, zoom):
+    return css_px * zoom
+
+
 class DocumentLayout:
     def __init__(self, node):
         self.node = node
@@ -1621,7 +1625,7 @@ def mainloop(browser):
                 browser.handle_click(event.button)
             elif event.type == sdl2.SDL_KEYDOWN:
                 if ctrl_down:
-                    if event.key.keysym.sym == sdl2.SDLK_EQUALS:
+                    if event.key.keysym.sym == sdl2.SDLK_SEMICOLON:
                         browser.increment_zoom(True)
                     elif event.key.keysym.sym == sdl2.SDLK_MINUS:
                         browser.increment_zoom(False)
@@ -1922,6 +1926,14 @@ class Browser:
         maxscroll = height - (HEIGHT - self.chrome.bottom)
         return max(0, min(scroll, maxscroll))
 
+    def increment_zoom(self, increment):
+        task = Task(self.active_tab.zoom_by, increment)
+        self.active_tab.task_runner.schedule_task(task)
+
+    def reset_zoom(self):
+        task = Task(self.active_tab.reset_zoom)
+        self.active_tab.task_runner.schedule_task(task)
+
     def handle_down(self):
         self.lock.acquire(blocking=True)
         if not self.active_tab_height:
@@ -2124,14 +2136,6 @@ class Browser:
             self.needs_animation_frame = True
         self.lock.release()
 
-    def increment_zoom(self, increment):
-        task = Task(self.active_tab.zoom_by, increment)
-        self.active_tab.task_runner.schedule_task(task)
-
-    def reset_zoom(self):
-        task = Task(self.active_tab.reset_zoom)
-        self.active_tab.task_runner.schedule_task(task)
-
 
 class Tab:
     def __init__(self, browser, tab_height):
@@ -2155,6 +2159,22 @@ class Tab:
         self.scroll_changed_in_tab = False
         self.composited_updates = []
         self.zoom = 1
+
+    def zoom_by(self, increment):
+        if increment:
+            self.zoom *= 1.1
+            self.scroll *= 1.1
+        else:
+            self.zoom *= 1 / 1.1
+            self.scroll *= 1 / 1.1
+        self.scroll_changed_in_tab = True
+        self.set_needs_render()
+
+    def reset_zoom(self):
+        self.scroll /= self.zoom
+        self.zoom = 1
+        self.scroll_changed_in_tab = True
+        self.set_needs_render()
 
     def clamp_scroll(self, scroll):
         height = math.ceil(self.document.height + 2 * VSTEP)
@@ -2283,9 +2303,9 @@ class Tab:
 
     # URLからWebページを読み込み、表示する関数
     def load(self, url, payload=None):
-        self.zoom = 1
         headers, body = url.request(self.url, payload)
         self.scroll = 0
+        self.zoom = 1
         self.scroll_changed_in_tab = True
         self.task_runner.clear_pending_tasks()
         self.history.append(url)
@@ -2380,22 +2400,6 @@ class Tab:
             back = self.history.pop()
             self.load(back)
 
-    def zoom_by(self, increment):
-        if increment:
-            self.zoom *= 1.1
-            self.scroll *= 1.1
-        else:
-            self.zoom *= 1 / 1.1
-            self.scroll *= 1 / 1.1
-        self.scroll_changed_in_tab = True
-        self.set_needs_render()
-
-    def reset_zoom(self):
-        self.scroll /= self.zoom
-        self.zoom = 1
-        self.scroll_changed_in_tab = True
-        self.set_needs_render()
-
 
 class CommitData:
     def __init__(self, url, scroll, height, display_list, composited_updates):
@@ -2476,10 +2480,6 @@ class MeasureTime:
         self.file.write("]}")
         self.file.close()
         self.lock.release()
-
-
-def dpx(css_px, zoom):
-    return css_px * zoom
 
 
 if __name__ == "__main__":
