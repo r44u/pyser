@@ -1520,12 +1520,12 @@ class Chrome:
         self.focus = None
 
     def paint(self):
+        color = "black"
         if self.browser.dark_mode:
             color = "white"
         else:
             color = "black"
         cmds = []
-        cmds.append(DrawRect(skia.Rect.MakeLTRB(0, 0, WIDTH, self.bottom), color))
         cmds.append(DrawLine(0, self.bottom, WIDTH, self.bottom, color, 1))
         cmds.append(DrawOutline(self.newtab_rect, color, 1))
         cmds.append(
@@ -2515,7 +2515,7 @@ class MeasureTime:
 if __name__ == "__main__":
     import sys
 
-    sdl2.SDL_Init(sdl2.SDL_INIT_EVENTS | sdl2.SDL_INIT_VIDEO)
+    sdl2.SDL_Init(sdl2.SDL_INIT_EVENTS)
     browser = Browser()
     browser.new_tab(URL(sys.argv[1]))
     mainloop(browser)
