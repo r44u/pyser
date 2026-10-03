@@ -861,7 +861,7 @@ class HTMLParser:
 
 
 def cascade_priority(rule):
-    selector, body = rule
+    media, selector, body = rule
     return selector.priority
 
 
@@ -973,15 +973,30 @@ class CSSParser:
 
     def parse(self):
         rules = []
+        media = None
+        self.whitespace()
+
         while self.i < len(self.s):
             try:
-                self.whitespace()  # 空白
-                selector = self.selector()  # セレクタ
-                self.literal("{")  # {
-                self.whitespace()  # 空白
-                body = self.body()  # ボディ
-                self.literal("}")  # }
-                rules.append((selector, body))
+                if self.s[self.i] == "@" and not media:
+                    prop, val = self.media_query()
+                    if prop == "prefers-color-scheme" and val in ["dark", "light"]:
+                        media = val
+                    self.whitespace()
+                    self.literal("{")
+                    self.whitespace()
+                elif self.s[self.i] == "}" and media:
+                    self.literal("}")
+                    media = None
+                    self.whitespace()
+                else:
+                    self.whitespace()  # 空白
+                    selector = self.selector()  # セレクタ
+                    self.literal("{")  # {
+                    self.whitespace()  # 空白
+                    body = self.body()  # ボディ
+                    self.literal("}")  # }
+                    rules.append((media, selector, body))
             except Exception:
                 why = self.ignore_until(["}"])
                 if why == "}":
@@ -990,6 +1005,17 @@ class CSSParser:
                 else:
                     break
         return rules
+
+    def media_query(self):
+        self.literal("@")
+        assert self.word() == "media"
+        self.whitespace()
+        self.literal("(")
+        self.whitespace()
+        prop, val = self.pair([")"])
+        self.whitespace()
+        self.literal(")")
+        return prop, val
 
 
 def style(node, rules, tab):
@@ -1000,7 +1026,10 @@ def style(node, rules, tab):
             node.style[property] = node.parent.style[property]
         else:
             node.style[property] = default_value
-    for selector, body in rules:
+    for media, selector, body in rules:
+        if media:
+            if (media == "dark") != tab.dark_mode:
+                continue
         if not selector.matches(node):
             continue
         for property, value in body.items():
@@ -2515,7 +2544,7 @@ class MeasureTime:
 if __name__ == "__main__":
     import sys
 
-    sdl2.SDL_Init(sdl2.SDL_INIT_EVENTS)
+    sdl2.SDL_Init(sdl2.SDL_INIT_EVENTS | sdl2.SDL_INIT_VIDEO)
     browser = Browser()
     browser.new_tab(URL(sys.argv[1]))
     mainloop(browser)

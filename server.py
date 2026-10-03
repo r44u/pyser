@@ -38,6 +38,10 @@ def do_request(session, method, url, headers, body):
         return "200 OK", show_overlapping_divs()
     elif method == "GET" and url == "/lorem":
         return "200 OK", show_lorem()
+    elif method == "GET" and url == "/dark":
+        return "200 OK", show_dark_mode_example()
+    elif method == "GET" and url == "/example14-focus.css":
+        return "200 OK", show_dark_mode_example_css()
     elif method == "POST" and url == "/":
         params = form_decode(body)
         return do_login(session, params)
@@ -157,6 +161,35 @@ def show_overlapping_divs():
 def show_lorem():
     return """
 <div>Lorem ipsum dolor sit amet,consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.</div>
+"""
+
+
+def show_dark_mode_example():
+    return """
+<link rel=stylesheet href="example14-focus.css">
+<button tabindex=2>This is a button</button>
+<br>
+This is an input element: <input> and
+<a tabindex=1 href="/">this is a link.</a>
+<div>Not focusable</div>
+<div role=textbox>custom contents</div>
+<div tabindex=3>Tabbable element</div>
+<script src="example14-focus.js"></script>
+<br> . <br> . <br> . <br> . <br> . <br> .
+<br> . <br> . <br> . <br> . <br> . <br> .
+<br> . <br> . <br> . <br> . <br> . <br> .
+<div tabindex=12>Offscreen</div>
+<a href="http://browser.engineering">browser.engineering</a>
+"""
+
+
+def show_dark_mode_example_css():
+    return """
+@media (prefers-color-scheme: dark) {
+  a { color: lightblue; }
+  input { background-color: #2222FF; }
+  button { background-color: #992500; }
+}
 """
 
 
