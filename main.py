@@ -1676,6 +1676,8 @@ def mainloop(browser):
                         browser.new_tab("https://browser.engineering/")
                     elif event.key.keysym.sym == sdl2.SDLK_TAB:
                         browser.cycle_tabs()
+                    elif event.key.keysym.sym == sdl2.SDLK_d:
+                        browser.toggle_dark_mode()
                     elif event.key.keysym.sym == sdl2.SDLK_q:
                         browser.handle_quit()
                         sdl2.SDL_Quit()
@@ -1692,8 +1694,6 @@ def mainloop(browser):
                     or event.key.keysym.sym == sdl2.SDLK_LCTRL
                 ):
                     ctrl_down = True
-                elif event.key.keysym.sym == sdl2.SDLK_d:
-                    browser.toggle_dark_mode()
             elif event.type == sdl2.SDL_KEYUP:
                 if (
                     event.key.keysym.sym == sdl2.SDLK_RCTRL
