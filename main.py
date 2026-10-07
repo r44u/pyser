@@ -962,11 +962,10 @@ class CSSParser:
         return self.s[start : self.i]
 
     def selector(self):
-        out = TagSelector(self.word().casefold())
+        out = self.simple_selector()
         self.whitespace()
         while self.i < len(self.s) and self.s[self.i] != "{":
-            tag = self.word()
-            descendant = TagSelector(tag.casefold())
+            descendant = self.simple_selector()
             out = DescendantSelector(out, descendant)
             self.whitespace()
         return out
@@ -1016,6 +1015,40 @@ class CSSParser:
         self.whitespace()
         self.literal(")")
         return prop, val
+
+    def simple_selector(self):
+        out = TagSelector(self.word().casefold())
+        if self.i < len(self.s) and self.s[self.i] == ":":
+            self.literal(":")
+            pseudoclass = self.word().casefold()
+            out = PseudoclassSelector(pseudoclass, out)
+        return out
+
+
+class PseudoclassSelector:
+    def __init__(self, pseudoclass, base):
+        self.pseudoclass = pseudoclass
+        self.base = base
+        self.priority = self.base.priority
+
+    def matches(self, node):
+        if not self.base.matches(node):
+            return False
+        if self.pseudoclass == "focus":
+            return node.is_focused
+        else:
+            return False
+
+
+def parse_outline(outline_str):
+    if not outline_str:
+        return None
+    values = outline_str.split(" ")
+    if len(values) != 3:
+        return None
+    if values[1] != "solid":
+        return None
+    return int(values[0][:-2]), values[2]
 
 
 def style(node, rules, tab):
@@ -1315,6 +1348,14 @@ class LineLayout:
         return []
 
     def paint_effects(self, cmds):
+        outline_rect = skia.Rect.MakeEmpty()
+        outline_node = None
+        for child in self.children:
+            if child.node.parent.is_focused:
+                outline_rect.join(child.self_rect())
+                outline_node = child.node.parent
+        if outline_node:
+            paint_outline(outline_node, cmds, outline_rect, self.zoom)
         return cmds
 
 
@@ -1384,6 +1425,8 @@ class InputLayout:
         return cmds
 
     def paint_effects(self, cmds):
+        cmds = paint_visual_effects(self.node, cmds, self.selt_rect())
+        paint_outline(self.node, cmds, self.self_rect(), self.zoom)
         return cmds
 
 
@@ -2250,6 +2293,7 @@ class Tab:
         self.composited_updates = []
         self.zoom = 1
         self.dark_mode = browser.dark_mode
+        self.needs_focus_scroll = False
 
     def zoom_by(self, increment):
         if increment:
@@ -2341,6 +2385,20 @@ class Tab:
         max_y = max(self.document.height + 2 * VSTEP - self.tab_height, 0)
         self.scroll = min(self.scroll + SCROLL_STEP, max_y)
 
+    def scroll_to(self, elt):
+        objs = [
+            obj for obj in tree_to_list(self.document, []) if obj.node == self.focus
+        ]
+        if not objs:
+            return
+        obj = objs[0]
+        if self.scroll < obj.y < self.scroll + self.tab_height:
+            return
+        document_height = math.ceil(self.document.h + 2 * VSTEP)
+        new_scroll = obj.y - SCROLL_STEP
+        self.scroll = self.clamp_scroll(new_scroll)
+        self.scroll_changed_in_tab = True
+
     def allowed_request(self, url):
         return self.allowed_origins == None or url.origin() in self.allowed_origins
 
@@ -2371,6 +2429,11 @@ class Tab:
             self.display_list,
             composited_updates,
         )
+
+        if self.needs_focus_scroll and self.focus:
+            self.scroll_to(self.focus)
+        self.needs_focus_scroll = False
+
         self.display_list = None
         self.browser.commit(self, commit_data)
         self.scroll_changed_in_tab = False
@@ -2521,6 +2584,16 @@ class Tab:
                     self.submit_form(elt)
                 elt = elt.parent
 
+    def focus_element(self, node):
+        if node and node != self.focus:
+            self.needs_focus_scroll = True
+        if self.focus:
+            self.focus.is_focused = False
+        self.focus = node
+        if node:
+            node.is_focused = True
+            self.set_needs_render()
+
 
 class CommitData:
     def __init__(self, url, scroll, height, display_list, composited_updates):
@@ -2614,6 +2687,14 @@ def is_focusable(node):
 def get_tabindex(node):
     tabindex = int(node.attributes.get("tabindex", "9999999"))
     return 9999999 if tabindex == 0 else tabindex
+
+
+def paint_outline(node, cmds, rect, zoom):
+    outline = parse_outline(node.style.get("outline"))
+    if not outline:
+        return
+    thickness, color = outline
+    cmds.append(DrawOutline(rect, color, dpx(thickness, zoom)))
 
 
 if __name__ == "__main__":
