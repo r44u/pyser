@@ -531,6 +531,46 @@ def get_font(size, weight, style):
     return skia.Font(FONTS[key], size)
 
 
+class AccessibilityNode:
+    def __init__(self, node):
+        self.node = node
+        self.children = []
+        self.text = ""
+        if isinstance(node, Text):
+            if is_focusable(node.parent):
+                self.role = "focusable text"
+            else:
+                self.role = "StaticText"
+        else:
+            if "role" in node.attributes:
+                self.role = node.attributes["role"]
+            elif node.tag == "a":
+                self.role = "link"
+            elif node.tag == "input":
+                self.role = "textbox"
+            elif node.tag == "button":
+                self.role = "button"
+            elif node.tag == "html":
+                self.role = "document"
+            elif is_focusable(node):
+                self.role = "focusable"
+            else:
+                self.role = "none"
+
+    def build(self):
+        for child_node in self.node.children:
+            self.build_internal(child_node)
+
+    def build_internal(self, child_node):
+        child = AccessibilityNode(child_node)
+        if child.role != "none":
+            self.children.append(child)
+            child.build()
+        else:
+            for grandchild_node in child_node.children:
+                self.build_internal(grandchild_node)
+
+
 class URL:
     # コンストラクタ: URL文字列を受け取り、オブジェクトを初期化します
     def __init__(self, url):
@@ -2321,6 +2361,8 @@ class Tab:
         self.needs_style = False
         self.needs_layout = False
         self.needs_paint = False
+        self.needs_accessibility = False
+        self.accessibility_tree = None
         self.browser = browser
         self.scroll_changed_in_tab = False
         self.composited_updates = []
@@ -2600,6 +2642,7 @@ class Tab:
         if self.needs_layout:
             self.document = DocumentLayout(self.nodes)
             self.document.layout(self.zoom)
+            self.needs_accessibility = True
             self.needs_paint = True
             self.needs_layout = False
 
@@ -2614,6 +2657,11 @@ class Tab:
             self.needs_render = False
             self.needs_paint = False
         self.browser.measure.stop("render")
+
+        if self.needs_accessibility:
+            self.accessibility_tree = AccessibilityNode(self.nodes)
+            self.accessibility_tree.build()
+            self.needs_accessibility = False
 
         for item in self.display_list:
             print_tree(item)
