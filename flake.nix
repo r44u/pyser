@@ -14,6 +14,8 @@
             pysdl2
             pyopengl
             numpy
+            gtts
+            playsound
           ]))
           pkgs.SDL2
           pkgs.SDL2_ttf
