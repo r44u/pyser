@@ -92,6 +92,10 @@ XMLHttpRequest.prototype.send = function (body) {
 }
 
 
+Node.prototype.setAttribute = function (attr, value) {
+  return call_python("setAttribute", this.handle, attr, value);
+}
+
 // この定義は一番下にしないと謎に落ちるから注意
 Object.defineProperty(Node.prototype, 'innerHTML', {
   set: function (s) {

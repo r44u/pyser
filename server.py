@@ -42,6 +42,10 @@ def do_request(session, method, url, headers, body):
         return "200 OK", show_dark_mode_example()
     elif method == "GET" and url == "/example14-focus.css":
         return "200 OK", show_dark_mode_example_css()
+    elif method == "GET" and url == "/alert":
+        return "200 OK", show_alert()
+    elif method == "GET" and url == "/example14-alert-role.js":
+        return "200 OK", show_alert_js()
     elif method == "POST" and url == "/":
         params = form_decode(body)
         return do_login(session, params)
@@ -189,6 +193,29 @@ def show_dark_mode_example_css():
   a { color: lightblue; }
   input { background-color: #2222FF; }
   button { background-color: #992500; }
+}
+"""
+
+
+def show_alert():
+    return """
+<div>Alert text</div>
+<button>Toggle alert role</button>
+<script src="example14-alert-role.js"></script>
+"""
+
+
+def show_alert_js():
+    return """
+div = document.querySelectorAll("div")[0]
+button = document.querySelectorAll("button")[0]
+button.addEventListener("click", onclick);
+function onclick(e) {
+	if (!div.getAttribute("role"))
+		div.setAttribute("role", "alert");
+	else
+		div.setAttribute("role", "");
+	e.preventDefault();
 }
 """
 

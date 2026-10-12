@@ -94,6 +94,7 @@ class JSContext:
         self.interp.export_function("log", print)
         self.interp.export_function("querySelectorAll", self.querySelectorAll)
         self.interp.export_function("getAttribute", self.getAttribute)
+        self.interp.export_function("setAttribute", self.setAttribute)
         self.interp.export_function("innerHTML_set", self.innerHTML_set)
         self.interp.export_function("XMLHttpRequest_send", self.XMLHttpRequest_send)
         self.interp.export_function("requestAnimationFrame", self.requestAnimationFrame)
@@ -123,6 +124,11 @@ class JSContext:
         elt = self.handle_to_node[handle]
         attr = elt.attributes.get(attr, None)
         return attr if attr else ""
+
+    def setAttribute(self, handle, attr, value):
+        elt = self.handle_to_node[handle]
+        elt.attributes[attr] = value
+        self.tab.set_needs_render()
 
     def dispatch_event(self, type, elt):
         handle = self.node_to_handle.get(elt, -1)
@@ -1990,6 +1996,8 @@ class Browser:
         self.active_tab_display_list = None
         self.composited_layers = []
         self.draw_list = []
+        self.active_alerts = []
+        self.spoken_alerts = []
 
         sdl2.SDL_GL_SetAttribute(sdl2.SDL_GL_CONTEXT_MAJOR_VERSION, 3)
         sdl2.SDL_GL_SetAttribute(sdl2.SDL_GL_CONTEXT_MINOR_VERSION, 2)
@@ -2071,6 +2079,25 @@ class Browser:
         self.last_tab_focus = None
 
     def update_accessibility(self):
+        self.active_alerts = [
+            node
+            for node in tree_to_list(self.accessibility_tree, [])
+            if node.role == "alert"
+        ]
+        for alert in self.active_alerts:
+            if alert not in self.spoken_alerts:
+                self.speak_node(alert, "New alert")
+                self.spoken_alerts.append(alert)
+        new_spoken_alerts = []
+        for old_node in self.spoken_alerts:
+            new_nodes = [
+                node
+                for node in tree_to_list(self.accessibility_tree, [])
+                if node.node == old_node.node and node.role == "alert"
+            ]
+            if new_nodes:
+                new_spoken_alerts.append(new_nodes[0])
+        self.spoken_alerts = new_spoken_alerts
         if not self.accessibility_tree:
             return
 
