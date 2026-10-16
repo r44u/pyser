@@ -381,6 +381,17 @@ def paint_visual_effects(node, cmds, rect):
     return [Transform(translation, rect, node, [blend_op])]
 
 
+class DrawImage(PaintCommand):
+    def __init__(self, image, rect, quality):
+        super().__init__(rect)
+        self.image = image
+        self.quality = parse_image_rendering(quality)
+
+    def execute(self, canvas):
+        paint = skia.Paint(FilterQuality=self.quality)
+        canvas.drawImageRect(self.image, self.rect, paint)
+
+
 class Opacity:
     def __init__(self, opacity, children):
         self.opacity = opacity
@@ -471,6 +482,15 @@ def absolute_to_local(display_item, rect):
     for parent in reversed(parent_chain):
         rect = parent.unmap(rect)
     return rect
+
+
+def parse_image_rendering(quality):
+    if quality == "high-quality":
+        return skia.FilterQuality.kHigh_FilterQuality
+    elif quality == "crisp-edges":
+        return skia.FilterQuality.kLow_FilterQuality
+    else:
+        return skia.FilterQuality.kMedium_FilterQuality
 
 
 class Blend(VisualEffect):
@@ -623,10 +643,10 @@ class URL:
             request += payload
         # リクエストをUTF-8でエンコードして送信します
         s.send(request.encode("utf8"))
-        response = s.makefile("r", encoding="utf8", newline="\r\n")
+        response = s.makefile("b")
 
         # レスポンスの最初の行（ステータスライン）を読み取ります
-        statusline = response.readline()
+        statusline = response.readline().decode("utf8")
         # ステータスラインをバージョン、ステータスコード、説明に分割します
         version, status, explanation = statusline.split(" ", 2)
 
@@ -634,7 +654,7 @@ class URL:
         response_headers = {}
         # ヘッダーを読み取るループ
         while True:
-            line = response.readline()
+            line = response.readline().decode("utf8")
             # 空行はヘッダーの終わりを示します
             if line == "\r\n":
                 break
@@ -2550,6 +2570,9 @@ class Browser:
         self.lock.release()
 
 
+BROKEN_IMAGE = skia.Image.open("Broken_Image.png")
+
+
 class Tab:
     def __init__(self, browser, tab_height):
         # スクロール位置を初期化
@@ -2781,6 +2804,7 @@ class Tab:
     def load(self, url, payload=None):
         self.focus = None
         headers, body = url.request(self.url, payload)
+        body = body.decode("utf8", "replace")
         self.scroll = 0
         self.zoom = 1
         self.scroll_changed_in_tab = True
@@ -2836,6 +2860,25 @@ class Tab:
             self.rules.extend(CSSParser(body).parse())
         style(self.nodes, sorted(self.rules, key=cascade_priority), self)
         self.set_needs_render()
+        images = [
+            node
+            for node in tree_to_list(self.nodes, [])
+            if isinstance(node, Element) and node.tag == "img"
+        ]
+        for img in images:
+            try:
+                src = img.attributes.get("src", "")
+                image_url = url.resolve(src)
+                assert self.allowed_request(image_url), (
+                    "Blocked load of " + str(image_url) + " due to CSP"
+                )
+                header, body = image_url.request(url)
+                img.encoded_data = body
+                data = skia.Data.MakeWithoutCopy(body)
+                img.image = skia.Image.MakeFromEncoded(data)
+            except Exception as e:
+                print("Image", image_url, "crashed", e)
+                img.image = BROKEN_IMAGE
 
     def render(self):
         if not self.needs_render:
