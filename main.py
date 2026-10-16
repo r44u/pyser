@@ -15,6 +15,8 @@ import playsound
 
 SPEECH_FILE = "/tmp/speech-fragment.mp3"
 
+BROKEN_IMAGE = skia.Image.open("Broken_Image.png")
+
 
 def speak_text(text):
     print("SPEAK:", text)
@@ -153,6 +155,7 @@ class JSContext:
 
         def run_load():
             headers, response = full_url.request(self.tab.url, body)
+            response = response.decode("utf8", "replace")
             task = Task(self.dispatch_xhr_onload, response, handle)
             self.tab.task_runner.schedule_task(task)
             return response
@@ -363,6 +366,28 @@ class DrawRRect(PaintCommand):
         canvas.drawRRect(self.rrect, paint=skia.Paint(Color=sk_color))
 
 
+class DrawImage(PaintCommand):
+    def __init__(self, image, rect, quality):
+        super().__init__(rect)
+        self.image = image
+        self.quality = parse_image_rendering(quality)
+
+    def execute(self, canvas):
+        paint = skia.Paint(
+            FilterQuality=self.quality,
+        )
+        canvas.drawImageRect(self.image, self.rect, paint)
+
+
+def parse_image_rendering(quality):
+    if quality == "high-quality":
+        return skia.FilterQuality.kHigh_FilterQuality
+    elif quality == "crisp-edges":
+        return skia.FilterQuality.kLow_FilterQuality
+    else:
+        return skia.FilterQuality.kMedium_FilterQuality
+
+
 def paint_visual_effects(node, cmds, rect):
     translation = parse_transform(node.style.get("transform", ""))
     opacity = float(node.style.get("opacity", "1.0"))
@@ -379,17 +404,6 @@ def paint_visual_effects(node, cmds, rect):
     blend_op = Blend(opacity, blend_mode, node, cmds)
     node.blend_op = blend_op
     return [Transform(translation, rect, node, [blend_op])]
-
-
-class DrawImage(PaintCommand):
-    def __init__(self, image, rect, quality):
-        super().__init__(rect)
-        self.image = image
-        self.quality = parse_image_rendering(quality)
-
-    def execute(self, canvas):
-        paint = skia.Paint(FilterQuality=self.quality)
-        canvas.drawImageRect(self.image, self.rect, paint)
 
 
 class Opacity:
@@ -482,15 +496,6 @@ def absolute_to_local(display_item, rect):
     for parent in reversed(parent_chain):
         rect = parent.unmap(rect)
     return rect
-
-
-def parse_image_rendering(quality):
-    if quality == "high-quality":
-        return skia.FilterQuality.kHigh_FilterQuality
-    elif quality == "crisp-edges":
-        return skia.FilterQuality.kLow_FilterQuality
-    else:
-        return skia.FilterQuality.kMedium_FilterQuality
 
 
 class Blend(VisualEffect):
@@ -762,6 +767,7 @@ class Element:
         self.style = {}
         self.animations = {}
         self.layout_object = None
+        self.encoded_data = None
 
     def __repr__(self):
         return "<" + self.tag + ">"
@@ -2570,9 +2576,6 @@ class Browser:
         self.lock.release()
 
 
-BROKEN_IMAGE = skia.Image.open("Broken_Image.png")
-
-
 class Tab:
     def __init__(self, browser, tab_height):
         # スクロール位置を初期化
@@ -2838,6 +2841,7 @@ class Tab:
                 continue
             try:
                 header, body = script_url.request(url)
+                body = body.decode("utf8", "replace")
             except:
                 continue
             task = Task(self.js.run, script_url, body)
@@ -2855,23 +2859,23 @@ class Tab:
             style_url = url.resolve(link)
             try:
                 header, body = style_url.request(url)
+                body = body.decode("utf8", "replace")
             except:
                 continue
             self.rules.extend(CSSParser(body).parse())
         style(self.nodes, sorted(self.rules, key=cascade_priority), self)
-        self.set_needs_render()
         images = [
             node
             for node in tree_to_list(self.nodes, [])
             if isinstance(node, Element) and node.tag == "img"
         ]
         for img in images:
+            src = img.attributes.get("src", "")
+            image_url = url.resolve(src)
+            assert self.allowed_request(image_url), (
+                "Blocked load of " + str(image_url) + " due to CSP"
+            )
             try:
-                src = img.attributes.get("src", "")
-                image_url = url.resolve(src)
-                assert self.allowed_request(image_url), (
-                    "Blocked load of " + str(image_url) + " due to CSP"
-                )
                 header, body = image_url.request(url)
                 img.encoded_data = body
                 data = skia.Data.MakeWithoutCopy(body)
@@ -2879,6 +2883,7 @@ class Tab:
             except Exception as e:
                 print("Image", image_url, "crashed", e)
                 img.image = BROKEN_IMAGE
+        self.set_needs_render()
 
     def render(self):
         if not self.needs_render:

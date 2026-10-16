@@ -61,8 +61,16 @@ def do_request(session, method, url, headers, body):
         params = form_decode(body)
         add_entry(session, params)
         return "200 OK", show_comments(session)
+    elif method == "GET" and url == "/img":
+        return "200 OK", show_img()
     else:
         return "404 Not Found", not_found(url, method)
+
+
+def show_img():
+    return """
+<img src="https://browser.engineering/im/hes.jpg">
+    """
 
 
 def show_count():
