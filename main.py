@@ -370,6 +370,8 @@ class DrawImage(PaintCommand):
     def __init__(self, image, rect, quality):
         super().__init__(rect)
         self.image = image
+        print("hoge")
+        print(self.image)
         self.quality = parse_image_rendering(quality)
 
     def execute(self, canvas):
@@ -573,6 +575,14 @@ def get_font(size, weight, style):
         font = skia.Typeface("Arial", style_info)
         FONTS[key] = font
     return skia.Font(FONTS[key], size)
+
+
+def font(style, zoom):
+    weight = style["font-weight"]
+    variant = style["font-style"]
+    size = float(style["font-size"][:-2]) * 0.75
+    font_size = dpx(size, zoom)
+    return get_font(font_size, weight, variant)
 
 
 class URL:
@@ -797,6 +807,8 @@ class AccessibilityNode:
                 self.role = "document"
             elif is_focusable(node):
                 self.role = "focusable"
+            elif node.tag == "img":
+                self.role = "image"
             else:
                 self.role = "none"
 
@@ -860,6 +872,11 @@ class AccessibilityNode:
             else:
                 value = ""
             self.text = "Input box: " + value
+        elif self.role == "image":
+            if "alt" in self.node.attributes:
+                self.text = "Image: " + self.node.attributes["alt"]
+            else:
+                self.text = "Image"
         elif self.role == "button":
             self.text = "Button"
         elif self.role == "link":
@@ -1350,6 +1367,18 @@ class BlockLayout:
             self.x, self.y, self.x + self.width, self.y + self.height
         )
 
+    def add_inline_child(self, node, w, child_class, word=None):
+        if self.cursor_x + w > self.x + self.width:
+            self.new_line()
+        line = self.children[-1]
+        previous_word = line.children[-1] if line.children else None
+        if word:
+            child = child_class(node, word, line, previous_word)
+        else:
+            child = child_class(node, line, previous_word)
+        line.children.append(child)
+        self.cursor_x += w + font(node.style, self.zoom).measureText(" ")
+
     def layout_mode(self):
         if isinstance(self.node, Text):
             return "inline"
@@ -1360,7 +1389,7 @@ class BlockLayout:
             ]
         ):
             return "block"
-        elif self.node.children or self.node.tag == "input":
+        elif self.node.tag in ["input", "img"]:
             return "inline"
         elif self.node.children:
             return "inline"
@@ -1410,21 +1439,9 @@ class BlockLayout:
         self.line = []
 
     def word(self, node, word):
-        weight = node.style["font-weight"]
-        style = node.style["font-style"]
-        if style == "normal":
-            style = "roman"
-        px_size = float(node.style["font-size"][:-2])
-        size = dpx(px_size * 0.75, self.zoom)
-        font = get_font(size, weight, style)
-        w = font.measureText(word)  # 単語の幅を測定
-        if self.cursor_x + w > self.width:
-            self.new_line()
-        line = self.children[-1]
-        previous_word = line.children[-1] if line.children else None
-        text = TextLayout(node, word, line, previous_word)
-        line.children.append(text)
-        self.cursor_x += w + font.measureText(" ")
+        node_font = font(node.style, self.zoom)
+        w = node_font.measureText(word)
+        self.add_inline_child(node, w, TextLayout, word)
 
     def new_line(self):
         self.cursor_x = 0
@@ -1434,22 +1451,13 @@ class BlockLayout:
 
     def input(self, node):
         w = dpx(INPUT_WIDTH_PX, self.zoom)
-        if self.cursor_x + w > self.width:
-            self.new_line()
-        line = self.children[-1]
-        previous_word = line.children[-1] if line.children else None
-        input = InputLayout(node, line, previous_word)
-        line.children.append(input)
+        self.add_inline_child(node, w, InputLayout)
 
-        weight = node.style["font-weight"]
-        style = node.style["font-style"]
-        if style == "normal":
-            style = "roman"
-        px_size = float(node.style["font-size"][:-2])
-        size = dpx(px_size * 0.75, self.zoom)
-        font = get_font(size, weight, style)
-
-        self.cursor_x += w + font.measureText(" ")
+    def image(self, node):
+        print(node.image)
+        if node.image:
+            w = dpx(node.image.width(), self.zoom)
+            self.add_inline_child(node, w, ImageLayout)
 
     def recurse(self, node):
         if isinstance(node, Text):
@@ -1460,13 +1468,17 @@ class BlockLayout:
                 self.new_line()
             elif node.tag == "input" or node.tag == "button":
                 self.input(node)
+            elif node.tag == "img":
+                print("ogihara")
+                print(node)
+                self.image(node)
             else:
                 for child in node.children:
                     self.recurse(child)
 
     def should_paint(self):
         return isinstance(self.node, Text) or (
-            self.node.tag != "input" and self.node.tag != "button"
+            self.node.tag not in ["input", "button", "img"]
         )
 
     def paint(self):
@@ -1509,12 +1521,16 @@ class LineLayout:
             self.height = 0
             return
 
-        max_ascent = max([-word.font.getMetrics().fAscent for word in self.children])
-        baseline = self.y + 1.25 * max_ascent
-        for word in self.children:
-            word.y = baseline + word.font.getMetrics().fAscent
-        max_descent = max([word.font.getMetrics().fDescent for word in self.children])
-        self.height = 1.25 * (max_ascent + max_descent)
+        max_ascent = max([-child.ascent for child in self.children])
+        baseline = self.y + max_ascent
+
+        for child in self.children:
+            if isinstance(child, TextLayout):
+                child.y = baseline + child.ascent / 1.25
+            else:
+                child.y = baseline + child.ascent
+        max_descent = max([child.descent for child in self.children])
+        self.height = max_ascent + max_descent
 
     def should_paint(self):
         return True
@@ -1551,8 +1567,8 @@ def paint_outline(node, cmds, rect, zoom):
     cmds.append(DrawOutline(rect, color, dpx(thickness, zoom)))
 
 
-class InputLayout:
-    def __init__(self, node, parent, previous):
+class EmbedLayout:
+    def __init__(self, node, parent, previous, frame=None):
         self.node = node
         self.children = []
         self.parent = parent
@@ -1570,20 +1586,12 @@ class InputLayout:
 
     def layout(self):
         self.zoom = self.parent.zoom
-        weight = self.node.style["font-weight"]
-        style = self.node.style["font-style"]
-        if style == "normal":
-            style = "roman"
-        px_size = float(self.node.style["font-size"][:-2])
-        size = dpx(px_size * 0.75, self.zoom)
-        self.font = get_font(size, weight, style)
-        self.width = INPUT_WIDTH_PX
+        self.font = font(self.node.style, self.zoom)
         if self.previous:
             space = self.previous.font.measureText(" ")
             self.x = self.previous.x + space + self.previous.width
         else:
             self.x = self.parent.x
-        self.height = linespace(self.font)
 
     def should_paint(self):
         return True
@@ -1612,6 +1620,71 @@ class InputLayout:
     def paint_effects(self, cmds):
         cmds = paint_visual_effects(self.node, cmds, self.self_rect())
         paint_outline(self.node, cmds, self.self_rect(), self.zoom)
+        return cmds
+
+
+class InputLayout(EmbedLayout):
+    def __init__(self, node, parent, previous):
+        super().__init__(node, parent, previous)
+
+    def layout(self):
+        super().layout()
+        self.width = dpx(INPUT_WIDTH_PX, self.zoom)
+        self.height = linespace(self.font)
+        self.ascent = -self.height
+        self.descent = 0
+
+    def paint(self):
+        cmds = []
+
+        bgcolor = self.node.style.get("background-color", "transparent")
+        if bgcolor != "transparent":
+            radius = dpx(
+                float(self.node.style.get("border-radius", "0px")[:-2]), self.zoom
+            )
+            cmds.append(DrawRRect(self.self_rect(), radius, bgcolor))
+
+        if self.node.tag == "input":
+            text = self.node.attributes.get("value", "")
+        elif self.node.tag == "button":
+            if len(self.node.children) == 1 and isinstance(self.node.children[0], Text):
+                text = self.node.children[0].text
+            else:
+                print("Ignoring HTML contents inside button")
+                text = ""
+
+        color = self.node.style["color"]
+        cmds.append(DrawText(self.x, self.y, text, self.font, color))
+
+        if self.node.is_focused and self.node.tag == "input":
+            cx = self.x + self.font.measureText(text)
+            cmds.append(DrawLine(cx, self.y, cx, self.y + self.height, color, 1))
+
+        return cmds
+
+
+class ImageLayout(EmbedLayout):
+    def __init__(self, node, parent, previous):
+        super().__init__(node, parent, previous)
+
+    def layout(self):
+        super().layout()
+        self.width = dpx(self.node.image.width(), self.zoom)
+        self.img_height = dpx(self.node.image.height(), self.zoom)
+        self.height = max(self.img_height, linespace(self.font))
+        self.ascent = -self.height
+        self.descent = 0
+
+    def paint(self):
+        cmds = []
+        rect = skia.Rect.MakeLTRB(
+            self.x,
+            self.y + self.height - self.img_height,
+            self.x + self.width,
+            self.y + self.height,
+        )
+        quality = self.node.style.get("image-rendering", "auto")
+        cmds.append(DrawImage(self.node.image, rect, quality))
         return cmds
 
 
@@ -1647,6 +1720,8 @@ class TextLayout:
         else:
             self.x = self.parent.x
         self.height = linespace(self.font)
+        self.ascent = self.font.getMetrics().fAscent * 1.25
+        self.descent = self.font.getMetrics().fDescent * 1.25
 
     def should_paint(self):
         return True

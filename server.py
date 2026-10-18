@@ -63,14 +63,16 @@ def do_request(session, method, url, headers, body):
         return "200 OK", show_comments(session)
     elif method == "GET" and url == "/img":
         return "200 OK", show_img()
+    elif method == "GET" and url == "/hes.jpg":
+        return "200 OK", open("hes.jpg", "rb").read()
     else:
         return "404 Not Found", not_found(url, method)
 
 
 def show_img():
-    return """
-<img src="https://browser.engineering/im/hes.jpg">
-    """
+    out = "<!doctype html>"
+    out += """<img src="./hes.jpg" alt="An operator using the Hypertext Editing System in 1969">"""
+    return out
 
 
 def show_count():
@@ -337,14 +339,21 @@ def handle_connection(conx):
     session = SESSIONS.setdefault(token, {})
     status, body = do_request(session, method, url, headers, body)
     response = "HTTP/1.0 {}\r\n".format(status)
-    response += "Content-Length: {}\r\n".format(len(body.encode("utf8")))
+    if isinstance(body, bytes):
+        response += "Content-Length: {}\r\n".format(len(body))
+    else:
+        response += "Content-Length: {}\r\n".format(len(body.encode("utf8")))
     if "cookie" not in headers:
         template = "Set-Cookie: token={}; SameSite=Lax\r\n"
         response += template.format(token)
     csp = "default-src http://localhost:8000 http://host.docker.internal:8000"
     response += "Content-Security-Policy: {}\r\n".format(csp)
-    response += "\r\n" + body
-    conx.send(response.encode("utf8"))
+    if isinstance(body, bytes):
+        response += "\r\n"
+        conx.send(response.encode("utf8") + body)
+    else:
+        response += "\r\n" + body
+        conx.send(response.encode("utf8"))
     conx.close()
 
 
