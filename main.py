@@ -370,24 +370,19 @@ class DrawImage(PaintCommand):
     def __init__(self, image, rect, quality):
         super().__init__(rect)
         self.image = image
-        print("hoge")
-        print(self.image)
-        self.quality = parse_image_rendering(quality)
+        self.sampling = parse_image_rendering(quality)
 
     def execute(self, canvas):
-        paint = skia.Paint(
-            FilterQuality=self.quality,
-        )
-        canvas.drawImageRect(self.image, self.rect, paint)
+        canvas.drawImageRect(self.image, self.rect, self.sampling)
 
 
 def parse_image_rendering(quality):
     if quality == "high-quality":
-        return skia.FilterQuality.kHigh_FilterQuality
+        return skia.SamplingOptions(skia.CubicResampler.Mitchell())
     elif quality == "crisp-edges":
-        return skia.FilterQuality.kLow_FilterQuality
+        return skia.SamplingOptions(skia.FilterMode.kNearest, skia.MipmapMode.kNone)
     else:
-        return skia.FilterQuality.kMedium_FilterQuality
+        return skia.SamplingOptions(skia.FilterMode.kLinear, skia.MipmapMode.kLinear)
 
 
 def paint_visual_effects(node, cmds, rect):
@@ -1454,7 +1449,6 @@ class BlockLayout:
         self.add_inline_child(node, w, InputLayout)
 
     def image(self, node):
-        print(node.image)
         if "width" in node.attributes:
             w = dpx(int(node.attributes["width"]), self.zoom)
         elif node.image:
@@ -1473,8 +1467,6 @@ class BlockLayout:
             elif node.tag == "input" or node.tag == "button":
                 self.input(node)
             elif node.tag == "img":
-                print("ogihara")
-                print(node)
                 self.image(node)
             else:
                 for child in node.children:
@@ -1673,9 +1665,7 @@ class ImageLayout(EmbedLayout):
 
     def layout(self):
         super().layout()
-        self.height = max(self.img_height, linespace(self.font))
-        self.ascent = -self.height
-        self.descent = 0
+
         width_attr = self.node.attributes.get("width")
         height_attr = self.node.attributes.get("height")
         image_width = self.node.image.width()
@@ -1694,6 +1684,10 @@ class ImageLayout(EmbedLayout):
         else:
             self.width = dpx(image_width, self.zoom)
             self.img_height = dpx(image_height, self.zoom)
+
+        self.height = max(self.img_height, linespace(self.font))
+        self.ascent = -self.height
+        self.descent = 0
 
     def paint(self):
         cmds = []
