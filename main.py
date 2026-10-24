@@ -86,6 +86,56 @@ REFRESH_RATE_SEC = 0.033
 SHOW_COMPOSITED_LAYER_BORDERS = False
 
 
+class Frame:
+    def __init__(self, tab, parent_frame, frame_element):
+        self.tab = tab
+        self.parent_frame = parent_frame
+        self.frame_element = frame_element
+        self.loaded = False
+        self.window_id = len(self.tab.window_id_to_frame)
+        self.tab.window_id_to_frame[self.window_id] = self
+        self.needs_style = False
+        self.needs_layout = False
+        self.frame_width = 0
+        self.frame_height = 0
+
+    def set_needs_render(self):
+        self.needs_style = True
+        self.tab.set_needs_accessibility()
+        self.tab.set_needs_paint()
+
+    def set_needs_layout(self):
+        self.needs_layout = True
+        self.tab.set_needs_accessibility()
+        self.tab.set_needs_paint()
+
+    def render(self):
+        if self.needs_style:
+            print("hoge")
+        if self.needs_layout:
+            print("hoge")
+
+    def load(self, url, payload=None):
+        self.loaded = False
+        iframes = [
+            node
+            for node in tree_to_list(self.nodes, [])
+            if isinstance(node, Element)
+            and node.tag == "iframe"
+            and "src" in node.attributes
+        ]
+        for iframe in iframes:
+            document_url = url.resolve(iframe.attributes["src"])
+            if not self.allowed_request(document_url):
+                print("Blocked iframe", document_url, "due to CSP")
+                iframe.frame = None
+                continue
+            iframe.frame = Frame(self.tab, self, iframe)
+            task = Task(iframe.frame.load, document_url)
+            self.tab.task_runner.schedule_task(task)
+        self.loaded = True
+
+
 class JSContext:
     def __init__(self, tab):
         self.tab = tab
@@ -901,14 +951,19 @@ def print_tree(node, indent=0):
 
 
 def paint_tree(layout_object, display_list):
-    cmds = []
-    if layout_object.should_paint():
-        cmds = layout_object.paint()
-    for child in layout_object.children:
-        paint_tree(child, cmds)
+    cmds = layout_object.paint()
 
-    if layout_object.should_paint():
-        cmds = layout_object.paint_effects(cmds)
+    if (
+        isinstance(layout_object, IframeLayout)
+        and layout_object.node.frame
+        and layout_object.node.frame.loaded
+    ):
+        paint_tree(layout_object.node.frame.document, cmds)
+    else:
+        for child in layout_object.children:
+            paint_tree(child, cmds)
+
+    cmds = layout_object.paint_effects(cmds)
     display_list.extend(cmds)
 
 
@@ -1384,7 +1439,7 @@ class BlockLayout:
             ]
         ):
             return "block"
-        elif self.node.tag in ["input", "img"]:
+        elif self.node.tag in ["input", "img", "iframe"]:
             return "inline"
         elif self.node.children:
             return "inline"
@@ -1468,13 +1523,22 @@ class BlockLayout:
                 self.input(node)
             elif node.tag == "img":
                 self.image(node)
+            elif node.tag == "iframe" and "src" in node.attributes:
+                self.iframe(node)
             else:
                 for child in node.children:
                     self.recurse(child)
 
+    def iframe(self, node):
+        if "width" in self.node.attributes:
+            w = dpx(int(self.node.attributes["width"]), self.zoom)
+        else:
+            w = IFRAME_WIDTH_PX + dpx(2, self.zoom)
+        self.add_inline_child(node, w, IframeLayout, self.frame)
+
     def should_paint(self):
         return isinstance(self.node, Text) or (
-            self.node.tag not in ["input", "button", "img"]
+            self.node.tag not in ["input", "button", "img", "iframe"]
         )
 
     def paint(self):
@@ -1746,6 +1810,32 @@ class TextLayout:
 
     def paint_effects(self, cmds):
         return cmds
+
+
+IFRAME_WIDTH_PX = 300
+IFRAME_HEIGHT_PX = 150
+
+
+class IframeLayout(EmbedLayout):
+    def __init__(self, node, parent, previous, parent_frame):
+        super().__init__(node, parent, previous, parent_frame)
+
+    def layout(self):
+        if width_attr:
+            self.width = dpx(int(width_attr) + 2, self.zoom)
+        else:
+            self.width = dpx(IFRAME_WIDTH_PX + 2, self.zoom)
+
+        if height_attr:
+            self.height = dpx(int(height_attr) + 2, self.zoom)
+        else:
+            self.height = dpx(IFRAME_HEIGHT_PX + 2, self.zoom)
+
+        if self.node.frame:
+            self.node.frame.frame_height = self.height - dpx(2, self.zoom)
+            self.node.frame.frame_width = self.width - dpx(2, self.zoom)
+        self.ascent = -self.height
+        self.descent = 0
 
 
 DEFAULT_STYLE_SHEET = CSSParser(open("browser.css").read()).parse()
@@ -2691,6 +2781,8 @@ class Tab:
         self.needs_focus_scroll = False
         self.needs_accessibility = False
         self.accessibility_tree = None
+        self.root_frame = None
+        self.window_id_to_frame = {}
 
     def scroll_to(self, elt):
         objs = [
@@ -2790,6 +2882,10 @@ class Tab:
         self.needs_render = True
         self.needs_style = True
         self.browser.set_needs_animation_frame(self)
+
+    def set_needs_render_all_frames(self):
+        for id, frame in self.window_id_to_frame.items():
+            frame.set_needs_render()
 
     def set_needs_paint(self):
         self.needs_paint = True
@@ -2892,6 +2988,14 @@ class Tab:
         self.browser.commit(self, commit_data)
         self.scroll_changed_in_tab = False
 
+        for window_id, frame in self.window_id_to_frame.items():
+            if not frame.loaded:
+                continue
+            frame.js.dispatch_RAF()
+
+    def dispatch_RAF(self):
+        self.interp.evaljs("window.__runRAFHandlers()")
+
     # URLからWebページを読み込み、表示する関数
     def load(self, url, payload=None):
         self.focus = None
@@ -2904,6 +3008,10 @@ class Tab:
         self.history.append(url)
         self.url = url
         self.nodes = HTMLParser(body).parse()
+        self.root_frame = Frame(self, None, None)
+        self.root_frame.frame_width = WIDTH
+        self.root_frame.frame_height = self.tab_height
+        self.root_frame.load(url, payload)
 
         self.allowed_origins = None
         if "content-security-policy" in headers:
@@ -2978,6 +3086,9 @@ class Tab:
         if not self.needs_render:
             return
         self.browser.measure.time("render")
+        for id, frame in self.window_id_to_frame.items():
+            if frame.loaded:
+                frame.render()
         if self.needs_style:
             if self.dark_mode:
                 INHERITED_PROPERTIES["color"] = "white"
@@ -3007,7 +3118,7 @@ class Tab:
 
         if self.needs_paint:
             self.display_list = []
-            paint_tree(self.document, self.display_list)
+            paint_tree(self.root_frame.document, self.display_list)
             self.needs_render = False
             self.needs_paint = False
         self.browser.measure.stop("render")

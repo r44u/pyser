@@ -69,3 +69,7 @@ a:focus {
     outline: 2px solid white;
   }
 }
+
+iframe {
+  outline: 1px solid black;
+}
