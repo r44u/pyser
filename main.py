@@ -78,22 +78,22 @@ INHERITED_PROPERTIES = {
 COOKIE_JAR = {}
 
 RUNTIME_JS = open("runtime.js").read()
-EVENT_DISPATCH_JS = "new Node(dukpy.handle).dispatchEvent(new Event(dukpy.type))"
-SETTIMEOUT_JS = "__runSetTimeout(dukpy.handle)"
-XHR_ONLOAD_JS = "__runXHROnload(dukpy.out, dukpy.handle)"
+EVENT_DISPATCH_JS = (
+    "new window.Node(dukpy.handle).dispatchEvent(new window.Event(dukpy.type))"
+)
+SETTIMEOUT_JS = "window.__runSetTimeout(dukpy.handle)"
+XHR_ONLOAD_JS = "window.__runXHROnload(dukpy.out, dukpy.handle)"
 
 REFRESH_RATE_SEC = 0.033
 SHOW_COMPOSITED_LAYER_BORDERS = False
 
 
 class JSContext:
-    def __init__(self, frame):
-        self.frame = frame
-        self.tab = frame.tab
+    def __init__(self, tab, url_origin):
+        self.tab = tab
+        self.url_origin = url_origin
         self.interp = dukpy.JSInterpreter()
-        self.tab.browser.measure.time("script-runtime")
-        self.interp.evaljs(RUNTIME_JS)
-        self.tab.browser.measure.stop("script-runtime")
+        self.interp.evaljs("function Window(id) { this._id = id };")
         self.interp.export_function("log", print)
         self.interp.export_function("querySelectorAll", self.querySelectorAll)
         self.interp.export_function("getAttribute", self.getAttribute)
@@ -107,13 +107,24 @@ class JSContext:
         self.interp.export_function("setTimeout", self.setTimeout)
         self.discarded = False
 
-    def dispatch_RAF(self, window_id):
-        self.interp.evaljs("__runRAFHandlers()")
+    def add_window(self, frame):
+        code = "var window_{} = new Window({});".format(
+            frame.window_id, frame.window_id
+        )
+        self.interp.evaljs(code)
+        self.tab.browser.measure.time("script-runtime")
+        self.interp.evaljs(self.wrap(RUNTIME_JS, frame.window_id))
+        self.tab.browser.measure.stop("script-runtime")
 
-    def setAttribute(self, handle, attr, value):
+    def dispatch_RAF(self, window_id):
+        code = self.wrap("window.__runRAFHandlers()", window_id)
+        self.interp.evaljs(code)
+
+    def setAttribute(self, handle, attr, value, window_id):
+        frame = self.tab.window_id_to_frame[window_id]
         elt = self.handle_to_node[handle]
         elt.attributes[attr] = value
-        self.tab.set_needs_render()
+        frame.set_needs_render()
 
     def get_handle(self, elt):
         if elt not in self.node_to_handle:
@@ -124,45 +135,47 @@ class JSContext:
             handle = self.node_to_handle[elt]
         return handle
 
-    def querySelectorAll(self, selector_text):
+    def querySelectorAll(self, selector_text, window_id):
+        frame = self.tab.window_id_to_frame[window_id]
         selector = CSSParser(selector_text).selector()
         nodes = [
-            node
-            for node in tree_to_list(self.frame.nodes, [])
-            if selector.matches(node)
+            node for node in tree_to_list(frame.nodes, []) if selector.matches(node)
         ]
         return [self.get_handle(node) for node in nodes]
 
-    def getAttribute(self, handle, attr):
+    def getAttribute(self, handle, attr, window_id):
         elt = self.handle_to_node[handle]
         attr = elt.attributes.get(attr, None)
         return attr if attr else ""
 
-    def dispatch_event(self, type, elt):
+    def dispatch_event(self, type, elt, window_id):
         handle = self.node_to_handle.get(elt, -1)
-        do_default = self.interp.evaljs(EVENT_DISPATCH_JS, type=type, handle=handle)
+        code = self.wrap(EVENT_DISPATCH_JS, window_id)
+        do_default = self.interp.evaljs(code, type=type, handle=handle)
         return not do_default
 
-    def innerHTML_set(self, handle, s):
+    def innerHTML_set(self, handle, s, window_id):
+        frame = self.tab.window_id_to_frame[window_id]
         doc = HTMLParser("<html><body>" + s + "</body></html>").parse()
         new_nodes = doc.children[0].children
         elt = self.handle_to_node[handle]
         elt.children = new_nodes
         for child in elt.children:
             child.parent = elt
-        self.tab.set_needs_render()
+        frame.set_needs_render()
 
-    def XMLHttpRequest_send(self, method, url, body, isasync, handle):
-        full_url = self.frame.url.resolve(url)
-        if not self.frame.allowed_request(full_url):
+    def XMLHttpRequest_send(self, method, url, body, isasync, handle, window_id):
+        frame = self.tab.window_id_to_frame[window_id]
+        full_url = frame.url.resolve(url)
+        if not frame.allowed_request(full_url):
             raise Exception("Cross-origin XHR blocked by CSP")
-        if full_url.origin() != self.frame.url.origin():
+        if full_url.origin() != frame.url.origin():
             raise Exception("Cross-origin XHR request not allowed")
 
         def run_load():
-            headers, response = full_url.request(self.frame.url, body)
+            headers, response = full_url.request(frame.url, body)
             response = response.decode("utf8", "replace")
-            task = Task(self.dispatch_xhr_onload, response, handle)
+            task = Task(self.dispatch_xhr_onload, response, handle, window_id)
             self.tab.task_runner.schedule_task(task)
             return response
 
@@ -171,43 +184,50 @@ class JSContext:
         else:
             threading.Thread(target=run_load).start()
 
-    def dispatch_xhr_onload(self, out, handle):
+    def dispatch_xhr_onload(self, out, handle, window_id):
         if self.discarded:
             return
         self.tab.browser.measure.time("script-xhr")
-        do_default = self.interp.evaljs(XHR_ONLOAD_JS, out=out, handle=handle)
+        code = self.wrap(XHR_ONLOAD_JS, window_id)
+        self.interp.evaljs(code, out=out, handle=handle)
         self.tab.browser.measure.stop("script-xhr")
 
-    def dispatch_settimeout(self, handle):
+    def dispatch_settimeout(self, handle, window_id):
         if self.discarded:
             return
         self.tab.browser.measure.time("script-settimeout")
-        self.interp.evaljs(SETTIMEOUT_JS, handle=handle)
+        code = self.wrap(SETTIMEOUT_JS, window_id)
+        self.interp.evaljs(code, handle=handle)
         self.tab.browser.measure.stop("script-settimeout")
 
-    def setTimeout(self, handle, time):
+    def setTimeout(self, handle, time, window_id):
         def run_callback():
-            task = Task(self.dispatch_settimeout, handle)
+            task = Task(self.dispatch_settimeout, handle, window_id)
             self.tab.task_runner.schedule_task(task)
 
         threading.Timer(time / 1000.0, run_callback).start()
 
-    def requestAnimationFrame(self):
+    def requestAnimationFrame(self, window_id):
         self.tab.browser.set_needs_animation_frame(self.tab)
 
-    def style_set(self, handle, s):
+    def style_set(self, handle, s, window_id):
+        frame = self.tab.window_id_to_frame[window_id]
         elt = self.handle_to_node[handle]
         elt.attributes["style"] = s
-        self.tab.set_needs_render()
+        frame.set_needs_render()
 
-    def run(self, script, code):
+    def run(self, script, code, window_id):
         try:
+            code = self.wrap(code, window_id)
             self.tab.browser.measure.time("script-load")
             self.interp.evaljs(code)
             self.tab.browser.measure.stop("script-load")
         except dukpy.JSRuntimeError as e:
             self.tab.browser.measure.stop("script-load")
             print("Script", script, "crashed", e)
+
+    def wrap(self, script, window_id):
+        return "window = window_{}; {}".format(window_id, script)
 
 
 class PaintCommand:
@@ -785,7 +805,8 @@ class Element:
 
 
 class AccessibilityNode:
-    def __init__(self, node):
+    def __init__(self, node, parent=None):
+        self.parent = parent
         self.node = node
         self.children = []
         self.text = ""
@@ -899,14 +920,57 @@ class AccessibilityNode:
             and child_node.frame
             and child_node.frame.loaded
         ):
-            child = AccessibilityNode(child_node.frame.nodes)
-        child = AccessibilityNode(child_node)
+            child = FrameAccessibilityNode(child_node, self)
+        else:
+            child = AccessibilityNode(child_node, self)
         if child.role != "none":
             self.children.append(child)
             child.build()
         else:
             for grandchild_node in child_node.children:
                 self.build_internal(grandchild_node)
+
+    def absolute_bounds(self):
+        abs_bounds = []
+        for bound in self.bounds:
+            abs_bound = bound.makeOffset(0.0, 0.0)
+            if isinstance(self, FrameAccessibilityNode):
+                obj = self.parent
+            else:
+                obj = self
+            while obj:
+                obj.map_to_parent(abs_bound)
+                obj = obj.parent
+            abs_bounds.append(abs_bound)
+        return abs_bounds
+
+    def map_to_parent(self, rect):
+        pass
+
+
+class FrameAccessibilityNode(AccessibilityNode):
+    def __init__(self, node, parent=None):
+        super().__init__(node, parent)
+        self.scroll = self.node.frame.scroll
+        self.zoom = self.node.layout_object.zoom
+
+    def map_to_parent(self, rect):
+        bounds = self.bounds[0]
+        rect.offset(bounds.left(), bounds.top() - self.scroll)
+        rect.intersect(bounds)
+
+    def hit_test(self, x, y):
+        bounds = self.bounds[0]
+        if not bounds.contains(x, y):
+            return
+        new_x = x - bounds.left() - dpx(1, self.zoom)
+        new_y = y - bounds.top() - dpx(1, self.zoom) + self.scroll
+        node = self
+        for child in self.children:
+            res = child.hit_test(new_x, new_y)
+            if res:
+                node = res
+        return node
 
 
 def print_tree(node, indent=0):
@@ -2861,7 +2925,8 @@ class Frame:
         ]
         if self.js:
             self.js.discarded = True
-        self.js = JSContext(self)
+        self.js = self.tab.get_js(url)
+        self.js.add_window(self)
         for script in scripts:
             script_url = url.resolve(script)
             if not self.allowed_request(script_url):
@@ -2872,7 +2937,7 @@ class Frame:
                 body = body.decode("utf8", "replace")
             except:
                 continue
-            task = Task(self.js.run, script_url, body)
+            task = Task(self.js.run, script_url, body, self.window_id)
             self.tab.task_runner.schedule_task(task)
         self.rules = DEFAULT_STYLE_SHEET.copy()
         links = [
@@ -2934,10 +2999,76 @@ class Frame:
         if self.tab.focus and self.tab.focus.tag == "input":
             if not "value" in self.tab.focus.attributes:
                 self.activate_element(self.tab.focus)
-            if self.js.dispatch_event("keydown", self.tab.focus):
+            if self.js.dispatch_event("keydown", self.tab.focus, self.window_id):
                 return
             self.tab.focus.attributes["value"] += char
             self.set_needs_render()
+
+    def submit_form(self, elt):
+        if self.js.dispatch_event("submit", elt, self.window_id):
+            return
+        inputs = [
+            node
+            for node in tree_to_list(elt, [])
+            if isinstance(node, Element)
+            and node.tag == "input"
+            and "name" in node.attributes
+        ]
+        body = ""
+        for input in inputs:
+            name = input.attributes["name"]
+            value = input.attributes.get("value", "")
+            name = urllib.parse.quote(name)
+            value = urllib.parse.quote(value)
+            body += "&" + name + "=" + value
+        body = body[1:]
+        url = self.url.resolve(elt.attributes["action"])
+        self.load(url, body)
+
+    def activate_element(self, elt):
+        if elt.tag == "input":
+            elt.attributes["value"] = ""
+            self.set_needs_render()
+        elif elt.tag == "a" and "href" in elt.attributes:
+            url = self.url.resolve(elt.attributes["href"])
+            self.load(url)
+        elif elt.tag == "button":
+            while elt:
+                if elt.tag == "form" and "action" in elt.attributes:
+                    self.submit_form(elt)
+                    return
+                elt = elt.parent
+
+    def click(self, x, y):
+        self.focus_element(None)
+        y += self.scroll
+        loc_rect = skia.Rect.MakeXYWH(x, y, 1, 1)
+        objs = [
+            obj
+            for obj in tree_to_list(self.document, [])
+            if absolute_bounds_for_obj(obj).intersects(loc_rect)
+        ]
+        if not objs:
+            return
+        elt = objs[-1].node
+        if elt and self.js.dispatch_event("click", elt, self.window_id):
+            return
+        while elt:
+            if isinstance(elt, Text):
+                pass
+            elif elt.tag == "iframe":
+                abs_bounds = absolute_bounds_for_obj(elt.layout_object)
+                border = dpx(1, elt.layout_object.zoom)
+                new_x = x - abs_bounds.left() - border
+                new_y = y - abs_bounds.top() - border
+                elt.frame.click(new_x, new_y)
+                return
+            elif is_focusable(elt):
+                self.focus_element(elt)
+                self.activate_element(elt)
+                self.set_needs_render()
+                return
+            elt = elt.parent
 
 
 class Tab:
@@ -2966,6 +3097,13 @@ class Tab:
         self.window_id_to_frame = {}
         self.focus = None
         self.focused_frame = None
+        self.origin_to_js = {}
+
+    def get_js(self, url):
+        origin = url.origin()
+        if origin not in self.origin_to_js:
+            self.origin_to_js[origin] = JSContext(self, origin)
+        return self.origin_to_js[origin]
 
     def set_needs_accessibility(self):
         self.needs_accessibility = True
@@ -2989,24 +3127,11 @@ class Tab:
         self.scroll_changed_in_tab = True
 
     def enter(self):
-        if not self.focus:
-            return
-        if self.root_frame.js.dispatch_event("click", self.focus):
-            return
-        self.activate_element(self.focus)
-
-    def activate_element(self, elt):
-        if elt.tag == "input":
-            elt.attributes["value"] = ""
-            self.set_needs_render()
-        elif elt.tag == "a" and "href" in elt.attributes:
-            url = self.root_frame.url.resolve(elt.attributes["href"])
-            self.load(url)
-        elif elt.tag == "button":
-            while elt:
-                if elt.tag == "form" and "action" in elt.attributes:
-                    self.submit_form(elt)
-                elt = elt.parent
+        if self.focus:
+            frame = self.focused_frame or self.root_frame
+            if frame.js.dispatch_event("click", self.focus, frame.window_id):
+                return
+            frame.activate_element(self.focus)
 
     def advance_tab(self):
         frame = self.focused_frame or self.root_frame
@@ -3055,63 +3180,19 @@ class Tab:
         if frame:
             frame.keypress(char)
 
-    def submit_form(self, elt):
-        if self.root_frame.js.dispatch_event("submit", elt):
-            return
-        inputs = [
-            node
-            for node in tree_to_list(elt, [])
-            if isinstance(node, Element)
-            and node.tag == "input"
-            and "name" in node.attributes
-        ]
-        body = ""
-        for input in inputs:
-            name = input.attributes["name"]
-            value = input.attributes.get("value", "")
-            name = urllib.parse.quote(name)
-            value = urllib.parse.quote(value)
-            body += "&" + name + "=" + value
-        body = body[1:]
-        url = self.root_frame.url.resolve(elt.attributes["action"])
-        self.load(url, body)
-
     def allowed_request(self, url):
         return self.root_frame.allowed_request(url)
 
     def click(self, x, y):
         self.render()
-        y += self.scroll
-        loc_rect = skia.Rect.MakeXYWH(x, y, 1, 1)
-        objs = [
-            obj
-            for obj in tree_to_list(self.root_frame.document, [])
-            if absolute_bounds_for_obj(obj).intersects(loc_rect)
-        ]
-        if not objs:
-            return
-        elt = objs[-1].node
-        while elt:
-            if isinstance(elt, Text):
-                pass
-            elif is_focusable(elt):
-                self.root_frame.focus_element(elt)
-                self.activate_element(elt)
-                return
-            elif elt.tag == "iframe":
-                abs_bounds = absolute_bounds_for_obj(elt.layout_object)
-                border = dpx(1, elt.layout_object.zoom)
-                new_x = x - abs_bounds.left() - border
-                new_y = y - abs_bounds.top() - border
-                elt.frame.click(new_x, new_y)
-                return
-            elt = elt.parent
+        self.root_frame.click(x, y)
 
     def scrolldown(self):
         max_y = max(self.root_frame.document.height + 2 * VSTEP - self.tab_height, 0)
         self.scroll = min(self.scroll + SCROLL_STEP, max_y)
 
     def run_animation_frame(self, scroll):
+        self.render()
         root_frame_focused = (
             not self.focused_frame or self.focused_frame == self.root_frame
         )
@@ -3134,8 +3215,6 @@ class Tab:
                 continue
             if frame.needs_style or frame.needs_layout:
                 needs_composite = True
-
-        self.render()
 
         if self.needs_focus_scroll and self.focus:
             self.scroll_to(self.focus)

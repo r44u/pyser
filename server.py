@@ -94,7 +94,7 @@ def show_animate():
 
 def show_animate_js():
     return """
-var div = document.querySelectorAll("div")[0];
+var div = window.document.querySelectorAll("div")[0];
 var total_frames = 120;
 var current_frame = 0;
 var change_per_frame = (0.999 - 0.1) / total_frames;
@@ -106,9 +106,9 @@ function animate() {
 }
 function run_animation_frame() {
     if (animate())
-        requestAnimationFrame(run_animation_frame);
+        window.requestAnimationFrame(run_animation_frame);
 }
-requestAnimationFrame(run_animation_frame);
+window.requestAnimationFrame(run_animation_frame);
     """
 
 
