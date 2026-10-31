@@ -109,3 +109,42 @@ Object.defineProperty(window.Node.prototype, 'style', {
 window.Node.prototype.setAttribute = function (attr, value) {
   return call_python("setAttribute", this.handle, attr, value, window._id);
 }
+
+Object.defineProperty(Window.prototype, 'parent', {
+  configurable: true,
+  get: function () {
+    var parent_id = call_python('parent', window._id);
+    if (parent_id != undefined) {
+      var parent = WINDOWS[parent_id];
+      if (parent === undefined) parent = new Window(parent_id);
+      return parent;
+    }
+  }
+});
+
+window.WINDOW_LISTENERS = {}
+
+window.MessageEvent = function (data) {
+  this.type = "message";
+  this.data = data;
+}
+
+Window.prototype.addEventListener = function (type, listener) {
+  if (!window.WINDOW_LISTENERS[this.handle]) window.WINDOW_LISTENERS[this.handle] = {};
+  var dict = window.WINDOW_LISTENERS[this.handle];
+  if (!dict[type]) dict[type] = [];
+  var list = dict[type];
+  list.push(listener);
+}
+
+Window.prototype.dispatchEvent = function (evt) {
+  var type = evt.type;
+  var list = (window.WINDOW_LISTENERS[this.handle] && window.WINDOW_LISTENERS[this.handle][type]) || [];
+  for (var i = 0; i < list.length; i++) {
+    list[i].call(this, evt);
+    return evt.do_default;
+  }
+}
+Window.prototype.postMessage = function (message, origin) {
+  call_python("postMessage", this._id, message, origin)
+}

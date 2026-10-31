@@ -83,6 +83,7 @@ EVENT_DISPATCH_JS = (
 )
 SETTIMEOUT_JS = "window.__runSetTimeout(dukpy.handle)"
 XHR_ONLOAD_JS = "window.__runXHROnload(dukpy.out, dukpy.handle)"
+POST_MESSAGE_DISPATCH_JS = "window.dispatchEvent(new window.MessageEvent(dukpy.data))"
 
 REFRESH_RATE_SEC = 0.033
 SHOW_COMPOSITED_LAYER_BORDERS = False
@@ -102,17 +103,41 @@ class JSContext:
         self.interp.export_function("requestAnimationFrame", self.requestAnimationFrame)
         self.interp.export_function("style_set", self.style_set)
         self.interp.export_function("setAttribute", self.setAttribute)
+        self.interp.export_function("parent", self.parent)
+        self.interp.export_function("postMessage", self.postMessage)
         self.node_to_handle = {}
         self.handle_to_node = {}
         self.interp.export_function("setTimeout", self.setTimeout)
         self.discarded = False
+        self.interp.evaljs("WINDOWS = {}")
+
+    def dispatch_post_message(self, message, window_id):
+        self.interp.evaljs(self.wrap(POST_MESSAGE_DISPATCH_JS, window_id), data=message)
+
+    def postMessage(self, target_window_id, message, origin):
+        task = Task(self.tab.post_message, message, target_window_id)
+        self.tab.task_runner.schedule_task(task)
+
+    def throw_if_cross_origin(self, frame):
+        if frame.url.origin() != self.url_origin:
+            raise Exception("Cross-origin access disallowed from script")
+
+    def parent(self, window_id):
+        parent_frame = self.tab.window_id_to_frame[window_id].parent_frame
+        if not parent_frame:
+            return None
+        return parent_frame.window_id
 
     def add_window(self, frame):
         code = "var window_{} = new Window({});".format(
             frame.window_id, frame.window_id
         )
         self.interp.evaljs(code)
+        self.interp.evaljs(
+            "WINDOWS[{}] = window_{};".format(frame.window_id, frame.window_id)
+        )
         self.tab.browser.measure.time("script-runtime")
+
         self.interp.evaljs(self.wrap(RUNTIME_JS, frame.window_id))
         self.tab.browser.measure.stop("script-runtime")
 
@@ -122,6 +147,7 @@ class JSContext:
 
     def setAttribute(self, handle, attr, value, window_id):
         frame = self.tab.window_id_to_frame[window_id]
+        self.throw_if_cross_origin(frame)
         elt = self.handle_to_node[handle]
         elt.attributes[attr] = value
         frame.set_needs_render()
@@ -137,6 +163,7 @@ class JSContext:
 
     def querySelectorAll(self, selector_text, window_id):
         frame = self.tab.window_id_to_frame[window_id]
+        self.throw_if_cross_origin(frame)
         selector = CSSParser(selector_text).selector()
         nodes = [
             node for node in tree_to_list(frame.nodes, []) if selector.matches(node)
@@ -156,6 +183,7 @@ class JSContext:
 
     def innerHTML_set(self, handle, s, window_id):
         frame = self.tab.window_id_to_frame[window_id]
+        self.throw_if_cross_origin(frame)
         doc = HTMLParser("<html><body>" + s + "</body></html>").parse()
         new_nodes = doc.children[0].children
         elt = self.handle_to_node[handle]
@@ -212,6 +240,7 @@ class JSContext:
 
     def style_set(self, handle, s, window_id):
         frame = self.tab.window_id_to_frame[window_id]
+        self.throw_if_cross_origin(frame)
         elt = self.handle_to_node[handle]
         elt.attributes["style"] = s
         frame.set_needs_render()
@@ -3098,6 +3127,10 @@ class Tab:
         self.focus = None
         self.focused_frame = None
         self.origin_to_js = {}
+
+    def post_message(self, message, target_window_id):
+        frame = self.window_id_to_frame[target_window_id]
+        frame.js.dispatch_post_message(message, target_window_id)
 
     def get_js(self, url):
         origin = url.origin()
