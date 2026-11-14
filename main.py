@@ -191,6 +191,10 @@ class JSContext:
         for child in elt.children:
             child.parent = elt
         frame.set_needs_render()
+        obj = elt.layout_object
+        while not isinstance(obj, BlockLayout):
+            obj = obj.parent
+        obj.children_dirty = True
 
     def XMLHttpRequest_send(self, method, url, body, isasync, handle, window_id):
         frame = self.tab.window_id_to_frame[window_id]
@@ -793,6 +797,8 @@ def is_focusable(node):
     if get_tabindex(node) < 0:
         return False
     elif "tabindex" in node.attributes:
+        return True
+    elif "contenteditable" in node.attributes:
         return True
     else:
         return node.tag in ["input", "button", "a"]
@@ -1439,8 +1445,11 @@ class DocumentLayout:
 
     def layout(self, zoom):
         self.zoom = zoom
-        child = BlockLayout(self.node, self, None, self.frame)
-        self.children.append(child)
+        if not self.children:
+            child = BlockLayout(self.node, self, None, self.frame)
+        else:
+            child = self.children[0]
+        self.children = [child]
         self.width = WIDTH - 2 * dpx(HSTEP, self.zoom)
         self.x = dpx(HSTEP, self.zoom)
         self.y = dpx(VSTEP, self.zoom)
@@ -1471,6 +1480,7 @@ class BlockLayout:
         self.cursor_y = 0
         node.layout_object = self
         self.frame = frame
+        self.children_dirty = True
 
     def self_rect(self):
         return skia.Rect.MakeLTRB(
@@ -1516,16 +1526,25 @@ class BlockLayout:
             self.y = self.parent.y
         mode = self.layout_mode()
         if mode == "block":
-            previous = None
-            for child in self.node.children:
-                next = BlockLayout(child, self, previous, self.frame)
-                self.children.append(next)
-                previous = next
+            if self.children_dirty:
+                self.children = []
+                previous = None
+                for child in self.node.children:
+                    next = BlockLayout(child, self, previous, self.frame)
+                    # self.children.append(next)
+                    previous = next
+                self.children_dirty = False
         else:
+            self.children = []
             self.new_line()
             self.recurse(self.node)
+            self.children_dirty = False
+
+        assert not self.children_dirty
         for child in self.children:
             child.layout()
+
+        assert not self.children_dirty
         self.height = sum([child.height for child in self.children])
 
     def flush(self):
@@ -1604,6 +1623,7 @@ class BlockLayout:
         )
 
     def paint(self):
+        assert not self.children_dirty
         cmds = []
         if isinstance(self.node, Element) and self.node.tag == "pre":
             x2, y2 = self.x + self.width, self.y + self.height
@@ -1613,11 +1633,25 @@ class BlockLayout:
         if bgcolor != "transparent":
             radius = float(self.node.style.get("border-radius", "0px")[:-2])
             cmds.append(DrawRRect(self.self_rect(), radius, bgcolor))
+        if self.node.is_focused and "contenteditable" in self.node.attributes:
+            text_nodes = [
+                t for t in tree_to_list(self, []) if isinstance(t, TextLayout)
+            ]
+            if text_nodes:
+                cmds.append(DrawCursor(text_nodes[-1], text_nodes[-1].width))
+            else:
+                cmds.append(DrawCursor(self, 0))
+
         return cmds
 
     def paint_effects(self, cmds):
         cmds = paint_visual_effects(self.node, cmds, self.self_rect())
         return cmds
+
+
+def DrawCursor(elt, offset):
+    x = elt.x + offset
+    return DrawLine(x, elt.y, x, elt.y + elt.height, "red", 1)
 
 
 class LineLayout:
@@ -1824,8 +1858,7 @@ class InputLayout(EmbedLayout):
         cmds.append(DrawText(self.x, self.y, text, self.font, color))
 
         if self.node.is_focused and self.node.tag == "input":
-            cx = self.x + self.font.measureText(text)
-            cmds.append(DrawLine(cx, self.y, cx, self.y + self.height, color, 1))
+            cmds.append(DrawCursor(self, self.font.measureText(text)))
 
         return cmds
 
@@ -2919,8 +2952,8 @@ class Frame:
             self.needs_style = False
 
         if self.needs_layout:
-            self.document = DocumentLayout(self.nodes, self)
-            self.document.layout(self.zoom)
+            # self.document = DocumentLayout(self.nodes, self)
+            self.document.layout(self.frame_width, self.tab.zoom)
             self.tab.needs_accessibility = True
             self.needs_paint = True
             self.needs_layout = False
@@ -3021,6 +3054,7 @@ class Frame:
             iframe.frame = Frame(self.tab, self, iframe)
             task = Task(iframe.frame.load, document_url)
             self.tab.task_runner.schedule_task(task)
+        self.document = DocumentLayout(self.nodes, self)
         self.set_needs_render()
         self.loaded = True
 
@@ -3031,6 +3065,21 @@ class Frame:
             if self.js.dispatch_event("keydown", self.tab.focus, self.window_id):
                 return
             self.tab.focus.attributes["value"] += char
+            self.set_needs_render()
+        elif self.tab.focus and "contenteditable" in self.tab.focus.attributes:
+            text_nodes = [
+                t for t in tree_to_list(self.tab.focus, []) if isinstance(t, Text)
+            ]
+            if text_nodes:
+                last_text = text_nodes[-1]
+            else:
+                last_text = Text("", self.tab.focus)
+                self.tab.focus.children.append(last_text)
+            last_text.text += char
+            obj = self.tab.focus.layout_object
+            while not isinstance(obj, BlockLayout):
+                obj = obj.parent
+            obj.children_dirty = True
             self.set_needs_render()
 
     def submit_form(self, elt):
