@@ -195,6 +195,7 @@ class JSContext:
         while not isinstance(obj, BlockLayout):
             obj = obj.parent
         obj.children_dirty = True
+        obj.children.mark()
 
     def XMLHttpRequest_send(self, method, url, body, isasync, handle, window_id):
         frame = self.tab.window_id_to_frame[window_id]
@@ -329,6 +330,17 @@ def add_parent_pointers(nodes, parent=None):
     for node in nodes:
         node.parent = parent
         add_parent_pointers(node.children, node)
+
+
+class ProtectedField:
+    def __init__(self):
+        self.value = None
+        self.dirty = True
+
+    def mark(self):
+        if self.dirty:
+            return
+        self.dirty = True
 
 
 class DrawCompositedLayer(PaintCommand):
