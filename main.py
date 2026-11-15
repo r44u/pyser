@@ -182,6 +182,10 @@ class JSContext:
         self.throw_if_cross_origin(frame)
         elt = self.handle_to_node[handle]
         elt.attributes[attr] = value
+        obj = elt.layout_object
+        if isinstance(obj, IframeLayout) or isinstance(obj, ImageLayout):
+            if attr == "width" or attr == "height":
+                obj.width.mark()
         frame.set_needs_render()
 
     def get_handle(self, elt):
@@ -942,12 +946,14 @@ class AccessibilityNode:
         bounds = []
         while not inline.layout_object:
             inline = inline.parent
-        for line in inline.layout_object.children:
+        for line in inline.layout_object.children.get():
             line_bounds = skia.Rect.MakeEmpty()
-            for child in line.children:
+            for child in line.children.get():
                 if child.node.parent == self.node:
                     line_bounds.join(
-                        skia.Rect.MakeXYWH(child.x, child.y, child.width, child.height)
+                        skia.Rect.MakeXYWH(
+                            child.x, child.y, child.width.get(), child.height
+                        )
                     )
             bounds.append(line_bounds)
         return bounds
@@ -1696,12 +1702,12 @@ class BlockLayout:
         assert not self.children.dirty
         cmds = []
         if isinstance(self.node, Element) and self.node.tag == "pre":
-            x2, y2 = self.x + self.width, self.y + self.height
+            x2, y2 = self.x + self.width.get(), self.y + self.height
             rect = DrawRect(skia.Rect.MakeLTRB(self.x, self.y, x2, y2), "gray")
             cmds.append(rect)
         bgcolor = self.node.style.get().get("background-color", "transparent")
         if bgcolor != "transparent":
-            radius = float(self.node.style.get("border-radius", "0px")[:-2])
+            radius = float(self.node.style.get().get("border-radius", "0px")[:-2])
             cmds.append(DrawRRect(self.self_rect(), radius, bgcolor))
         if self.node.is_focused and "contenteditable" in self.node.attributes:
             text_nodes = [
@@ -1727,10 +1733,11 @@ class LineLayout:
         self.children.set([])
         node.layout_object = self
         self.zoom = ProtectedField()
+        self.width = ProtectedField()
 
     def layout(self):
         self.zoom.copy(self.parent.zoom)
-        self.width = self.parent.width
+        self.width.copy(self.parent.width)
         self.x = self.parent.x
         if self.previous:
             self.y = self.previous.y + self.previous.height
@@ -1802,10 +1809,11 @@ class EmbedLayout:
         self.height = None
         node.layout_object = self
         self.zoom = ProtectedField()
+        self.width = ProtectedField()
 
     def self_rect(self):
         return skia.Rect.MakeLTRB(
-            self.x, self.y, self.x + self.width, self.y + self.height
+            self.x, self.y, self.x + self.width.get(), self.y + self.height
         )
 
     def layout(self):
@@ -1813,7 +1821,13 @@ class EmbedLayout:
         self.font = font(self.node.style, self.zoom)
         if self.previous:
             space = self.previous.font.measureText(" ")
-            self.x = self.previous.x + space + self.previous.width
+            self.x = self.previous.x + space + self.previous.width.get()
+            prev_width = (
+                self.previous.width.get()
+                if isinstance(self.previous.width, ProtectedField)
+                else self.previous.width
+            )
+            self.x = self.previous.x + space + prev_width
         else:
             self.x = self.parent.x
 
@@ -1841,19 +1855,19 @@ class IframeLayout(EmbedLayout):
         height_attr = self.node.attributes.get("height")
 
         if width_attr:
-            self.width = dpx(int(width_attr) + 2, self.zoom)
+            self.width = dpx(int(width_attr) + 2, self.zoom.get())
         else:
-            self.width = dpx(IFRAME_WIDTH_PX + 2, self.zoom)
+            self.width = dpx(IFRAME_WIDTH_PX + 2, self.zoom.get())
 
         if height_attr:
-            self.height = dpx(int(height_attr) + 2, self.zoom)
+            self.height = dpx(int(height_attr) + 2, self.zoom.get())
         else:
-            self.height = dpx(IFRAME_HEIGHT_PX + 2, self.zoom)
+            self.height = dpx(IFRAME_HEIGHT_PX + 2, self.zoom.get())
         self.ascent = -self.height
         self.descent = 0
         if self.node.frame:
-            self.node.frame.frame_height = self.height - dpx(2, self.zoom)
-            self.node.frame.frame_width = self.width - dpx(2, self.zoom)
+            self.node.frame.frame_height = self.height - dpx(2, self.zoom.get())
+            self.node.frame.frame_width = self.width - dpx(2, self.zoom.get())
 
     def paint(self):
         cmds = []
@@ -1897,7 +1911,8 @@ class InputLayout(EmbedLayout):
 
     def layout(self):
         super().layout()
-        self.width = dpx(INPUT_WIDTH_PX, self.zoom)
+        zoom = self.zoom.read(notify=self.width)
+        self.width.set(dpx(INPUT_WIDTH_PX, zoom))
         self.height = linespace(self.font)
         self.ascent = -self.height
         self.descent = 0
@@ -1906,10 +1921,10 @@ class InputLayout(EmbedLayout):
         cmds = []
         text = ""
 
-        bgcolor = self.node.style.get("background-color", "transparent")
+        bgcolor = self.node.style.get().get("background-color", "transparent")
         if bgcolor != "transparent":
             radius = dpx(
-                float(self.node.style.get("border-radius", "0px")[:-2]), self.zoom
+                float(self.node.style.get().get("border-radius", "0px")[:-2]), self.zoom
             )
             cmds.append(DrawRRect(self.self_rect(), radius, bgcolor))
 
@@ -1922,7 +1937,7 @@ class InputLayout(EmbedLayout):
                 print("Ignoring HTML contents inside button")
                 text = ""
 
-        color = self.node.style["color"]
+        color = self.node.style.get()["color"]
         cmds.append(DrawText(self.x, self.y, text, self.font, color))
 
         if self.node.is_focused and self.node.tag == "input":
@@ -1945,17 +1960,17 @@ class ImageLayout(EmbedLayout):
 
         aspect_ratio = image_width / image_height
         if width_attr and height_attr:
-            self.width = dpx(int(width_attr), self.zoom)
-            self.img_height = dpx(int(height_attr), self.zoom)
+            self.width.set(dpx(int(width_attr), self.zoom.get()))
+            self.img_height = dpx(int(height_attr), self.zoom.get())
         elif width_attr:
-            self.width = dpx(int(width_attr), self.zoom)
-            self.img_height = self.width / aspect_ratio
+            self.width.set(dpx(int(width_attr), self.zoom.get()))
+            self.img_height = self.width.get() / aspect_ratio
         elif height_attr:
-            self.img_height = dpx(int(height_attr), self.zoom)
-            self.width = self.img_height * aspect_ratio
+            self.img_height = dpx(int(height_attr), self.zoom.get())
+            self.width.set(self.img_height * aspect_ratio)
         else:
-            self.width = dpx(image_width, self.zoom)
-            self.img_height = dpx(image_height, self.zoom)
+            self.width.set(dpx(image_width, self.zoom.get()))
+            self.img_height = dpx(image_height, self.zoom.get())
 
         self.height = max(self.img_height, linespace(self.font))
         self.ascent = -self.height
@@ -1966,10 +1981,10 @@ class ImageLayout(EmbedLayout):
         rect = skia.Rect.MakeLTRB(
             self.x,
             self.y + self.height - self.img_height,
-            self.x + self.width,
+            self.x + self.width.get(),
             self.y + self.height,
         )
-        quality = self.node.style.get("image-rendering", "auto")
+        quality = self.node.style.get().get("image-rendering", "auto")
         cmds.append(DrawImage(self.node.image, rect, quality))
         return cmds
 
@@ -1985,25 +2000,26 @@ class TextLayout:
         self.x = None
         self.y = None
         node.layout_object = self
+        self.width = ProtectedField()
 
     def self_rect(self):
-        return skia.Rect.MakeLTRB(
-            self.x, self.y, self.x + self.width, self.y + self.height
+        width = (
+            self.width.get() if isinstance(self.width, ProtectedField) else self.width
         )
+        return skia.Rect.MakeLTRB(self.x, self.y, self.x + width, self.y + self.height)
 
     def layout(self):
         self.zoom = self.parent.zoom
-        weight = self.node.style.get()["font-weight"]
-        style = self.node.style.get()["font-style"]
-        if style == "normal":
-            style = "roman"
-        px_size = float(self.node.style.get()["font-size"][:-2])
-        size = dpx(px_size * 0.75, self.zoom)
-        self.font = get_font(size, weight, style)
-        self.width = self.font.measureText(self.word)
+        self.font = font(self.node.style, self.zoom)
+        self.width.set(self.font.measureText(self.word))
         if self.previous:
             space = self.previous.font.measureText(" ")
-            self.x = self.previous.x + space + self.previous.width
+            prev_width = (
+                self.previous.width.get()
+                if isinstance(self.previous.width, ProtectedField)
+                else self.previous.width
+            )
+            self.x = self.previous.x + space + prev_width
         else:
             self.x = self.parent.x
         self.height = linespace(self.font)
