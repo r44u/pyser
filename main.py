@@ -1505,6 +1505,8 @@ class DocumentLayout:
         self.children = ProtectedField()
         node.layout_object = self
         self.width = ProtectedField()
+        self.x = ProtectedField()
+        self.y = ProtectedField()
 
     def layout(self, width, zoom):
         if self.children.dirty:
@@ -1520,6 +1522,8 @@ class DocumentLayout:
         self.y = dpx(VSTEP, self.zoom)
         child.layout()
         self.height = child.height
+        self.x.set(dpx(HSTEP, zoom))
+        self.y.set(dpx(VSTEP, zoom))
 
     def should_paint(self):
         return True
@@ -1537,8 +1541,8 @@ class BlockLayout:
         self.parent = parent
         self.previous = previous
         self.children = ProtectedField()
-        self.x = None
-        self.y = None
+        self.x = ProtectedField()
+        self.y = ProtectedField()
         self.zoom = ProtectedField()
         self.width = ProtectedField()
         self.cursor_x = 0
@@ -1589,7 +1593,7 @@ class BlockLayout:
 
     def layout(self):
         self.zoom.copy(self.parent.zoom)
-        self.x = self.parent.x
+        self.x.set(self.parent.x)
         self.width.copy(self.parent.width)
         if self.previous:
             self.y = self.previous.y + self.previous.height
@@ -1619,6 +1623,13 @@ class BlockLayout:
             child.layout()
         assert not self.children.dirty
         self.height = sum([child.height for child in self.children.get()])
+
+        if self.previous:
+            prev_y = self.previous.y.read(notify=self.y)
+            prev_height = self.previous.height.read(notify=self.y)
+            self.y.set(prev_y + prev_height)
+        else:
+            self.y.copy(self.parent.y)
 
     def flush(self):
         # 行内の最大アセントを計算
